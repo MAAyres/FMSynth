@@ -1,0 +1,307 @@
+:root {
+    --bg-color: #050505;
+    --panel-bg: rgba(20, 20, 25, 0.4);
+    --text-main: #e0e0e0;
+    --text-dim: #888;
+
+    --accent-primary: #00f3ff;
+    /* Cyan */
+    --accent-secondary: #ff00ff;
+    /* Magenta */
+    --accent-tertiary: #4d4dff;
+    /* Blue */
+
+    --glow-strength: 0px 0px 10px;
+    --font-family: 'Outfit', sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    /* Prevent selection while using knobs */
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-main);
+    font-family: var(--font-family);
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+}
+
+.synth-container {
+    width: 100%;
+    max-width: 1000px;
+    height: 95vh;
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+    gap: 20px;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 10px;
+}
+
+h1 {
+    font-weight: 300;
+    letter-spacing: 4px;
+    text-shadow: var(--glow-strength) var(--accent-tertiary);
+}
+
+.accent {
+    color: var(--accent-primary);
+    font-weight: 700;
+    text-shadow: var(--glow-strength) var(--accent-primary);
+}
+
+.visualizer-container {
+    flex: 1;
+    position: relative;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: #000;
+    border-radius: 12px;
+    box-shadow: 0 0 20px rgba(0, 243, 255, 0.05) inset;
+    overflow: hidden;
+}
+
+#oscilloscope {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.glow-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.8);
+    border-radius: 12px;
+    z-index: 10;
+}
+
+#start-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 20;
+    cursor: pointer;
+    transition: opacity 0.5s;
+}
+
+#start-overlay span {
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: 5px;
+    color: var(--accent-primary);
+    text-shadow: 0 0 20px var(--accent-primary);
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        opacity: 0.5;
+    }
+
+    50% {
+        opacity: 1;
+    }
+
+    100% {
+        opacity: 0.5;
+    }
+}
+
+/* Controls */
+.controls-container {
+    display: flex;
+    flex-direction: row;
+    gap: 20px;
+    padding: 20px;
+    background: var(--panel-bg);
+    backdrop-filter: blur(10px);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    height: 35vh;
+}
+
+.global-section {
+    flex: 0 0 200px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    border-right: 1px solid rgba(255, 255, 255, 0.1);
+    padding-right: 20px;
+}
+
+.operator-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    /* D, C, B, A */
+    gap: 15px;
+}
+
+.operator-column {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Specific Op Colors */
+#op-A h3 {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+#op-B h3 {
+    color: var(--accent-secondary);
+    border-color: var(--accent-secondary);
+}
+
+#op-C h3 {
+    color: var(--accent-tertiary);
+    border-color: var(--accent-tertiary);
+}
+
+#op-D h3 {
+    color: #ffff00;
+    border-color: #ffff00;
+}
+
+/* Yellow */
+
+.control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.control-group h3,
+.operator-column h3,
+.global-section h3 {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    margin-bottom: 5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding-bottom: 5px;
+}
+
+.control-item {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.control-row {
+    display: flex;
+    gap: 10px;
+}
+
+.control-item.small {
+    flex: 1;
+}
+
+label {
+    font-size: 0.75rem;
+    color: var(--text-main);
+    text-shadow: none;
+}
+
+.value-display {
+    font-size: 0.7rem;
+    text-align: right;
+    color: var(--text-dim);
+    font-family: monospace;
+}
+
+/* Select Styling */
+select {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: var(--text-main);
+    padding: 4px;
+    border-radius: 4px;
+    font-family: var(--font-family);
+    font-size: 0.8rem;
+}
+
+select:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+/* Range Slider Styling */
+input[type=range] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    background: transparent;
+}
+
+input[type=range]:focus {
+    outline: none;
+}
+
+/* Track */
+input[type=range]::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 4px;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+}
+
+/* Thumb */
+input[type=range]::-webkit-slider-thumb {
+    height: 16px;
+    width: 16px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    cursor: pointer;
+    -webkit-appearance: none;
+    margin-top: -6px;
+    /* You need to specify a margin in Chrome, but in Firefox and IE it is automatic */
+    box-shadow: 0 0 10px var(--accent-primary);
+    border: 2px solid #fff;
+}
+
+input[type=range]:hover::-webkit-slider-thumb {
+    background: #fff;
+    box-shadow: 0 0 15px #fff;
+}
+
+.keyboard-help {
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    opacity: 0.6;
+}
+
+/* Responsiveness */
+@media (max-width: 768px) {
+    .controls-container {
+        grid-template-columns: 1fr;
+    }
+}

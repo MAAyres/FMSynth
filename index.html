@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FM Web Synth</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="synth-container">
+        <header>
+            <h1>FM <span class="accent">VISUALIZER</span></h1>
+        </header>
+
+        <div class="visualizer-container">
+            <canvas id="oscilloscope"></canvas>
+            <div class="glow-overlay"></div>
+            <div id="start-overlay">
+                <span>CLICK TO START</span>
+            </div>
+        </div>
+
+        <div class="controls-container">
+            <!-- Global / Master Section -->
+            <div class="global-section">
+                <h3>Global</h3>
+                <div class="control-row">
+                    <div class="control-item">
+                        <label for="spread">Spread</label>
+                        <input type="range" id="spread" min="0" max="100" value="0">
+                        <span class="value-display" id="val-spread">0%</span>
+                    </div>
+                    <div class="control-item">
+                        <label for="volume">Volume</label>
+                        <input type="range" id="volume" min="0" max="1" step="0.01" value="0.7">
+                    </div>
+                </div>
+                <!-- Global Envelope (Applied to Carrier A) -->
+                <div class="control-group">
+                    <h3>Amp Envelope</h3>
+                    <div class="control-row">
+                        <div class="control-item small">
+                            <label>A</label>
+                            <input type="range" id="attack" min="0.01" max="2.0" step="0.01" value="0.05">
+                        </div>
+                        <div class="control-item small">
+                            <label>D</label>
+                            <input type="range" id="decay" min="0.1" max="2.0" step="0.01" value="0.3">
+                        </div>
+                        <div class="control-item small">
+                            <label>S</label>
+                            <input type="range" id="sustain" min="0" max="1.0" step="0.01" value="0.7">
+                        </div>
+                        <div class="control-item small">
+                            <label>R</label>
+                            <input type="range" id="release" min="0.1" max="5.0" step="0.01" value="1.0">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Operator Grid -->
+            <div class="operator-grid">
+                <!-- Operator D -->
+                <div class="operator-column" id="op-D">
+                    <h3>Op D</h3>
+                    <div class="control-item">
+                        <label>Wave</label>
+                        <select id="opD-wave">
+                            <option value="sine">Sine</option>
+                            <option value="square">Square</option>
+                            <option value="sawtooth">Saw</option>
+                            <option value="triangle">Tri</option>
+                        </select>
+                    </div>
+                    <div class="control-item">
+                        <label>Coarse</label>
+                        <input type="range" id="opD-coarse" min="0.5" max="24" step="0.5" value="1">
+                        <span class="value-display" id="val-opD-coarse">1.0</span>
+                    </div>
+                    <div class="control-item">
+                        <label>Fine</label>
+                        <input type="range" id="opD-fine" min="-1000" max="1000" step="10" value="0">
+                        <span class="value-display" id="val-opD-fine">0</span>
+                    </div>
+                    <div class="control-item">
+                        <label>Level</label>
+                        <input type="range" id="opD-level" min="0" max="1" step="0.01" value="0">
+                        <span class="value-display" id="val-opD-level">0</span>
+                    </div>
+                </div>
+
+                <!-- Operator C -->
+                <div class="operator-column" id="op-C">
+                    <h3>Op C</h3>
+                    <div class="control-item">
+                        <label>Wave</label>
+                        <select id="opC-wave">
+                            <option value="sine">Sine</option>
+                            <option value="square">Square</option>
+                            <option value="sawtooth">Saw</option>
+                            <option value="triangle">Tri</option>
+                        </select>
+                    </div>
+                    <div class="control-item">
+                        <label>Coarse</label>
+                        <input type="range" id="opC-coarse" min="0.5" max="24" step="0.5" value="1">
+                        <span class="value-display" id="val-opC-coarse">1.0</span>
+                    </div>
+                    <div class="control-item">
+                        <label>Fine</label>
+                        <input type="range" id="opC-fine" min="-1000" max="1000" step="10" value="0">
+                        <span class="value-display" id="val-opC-fine">0</span>
+                    </div>
+                    <div class="control-item">
+                        <label>Level</label>
+                        <input type="range" id="opC-level" min="0" max="1" step="0.01" value="0">
+                        <span class="value-display" id="val-opC-level">0</span>
+                    </div>
+                </div>
+
+                <!-- Operator B -->
+                <div class="operator-column" id="op-B">
+                    <h3>Op B</h3>
+                    <div class="control-item">
+                        <label>Wave</label>
+                        <select id="opB-wave">
+                            <option value="sine">Sine</option>
+                            <option value="square">Square</option>
+                            <option value="sawtooth">Saw</option>
+                            <option value="triangle">Tri</option>
+                        </select>
+                    </div>
+                    <div class="control-item">
+                        <label>Coarse</label>
+                        <input type="range" id="opB-coarse" min="0.5" max="24" step="0.5" value="1">
+                        <span class="value-display" id="val-opB-coarse">1.0</span>
+                    </div>
+                    <div class="control-item">
+                        <label>Fine</label>
+                        <input type="range" id="opB-fine" min="-1000" max="1000" step="10" value="0">
+                        <span class="value-display" id="val-opB-fine">0</span>
+                    </div>
+                    <div class="control-item">
+                        <label>Level</label>
+                        <input type="range" id="opB-level" min="0" max="1" step="0.01" value="0.5">
+                        <!-- Default Mod Index approx -->
+                        <span class="value-display" id="val-opB-level">0.5</span>
+                    </div>
+                </div>
+
+                <!-- Operator A (Carrier) -->
+                <div class="operator-column" id="op-A">
+                    <h3>Op A (Carrier)</h3>
+                    <div class="control-item">
+                        <label>Wave</label>
+                        <select id="opA-wave">
+                            <option value="sine">Sine</option>
+                            <option value="square">Square</option>
+                            <option value="sawtooth">Saw</option>
+                            <option value="triangle">Tri</option>
+                        </select>
+                    </div>
+                    <div class="control-item">
+                        <label>Coarse</label>
+                        <input type="range" id="opA-coarse" min="0.5" max="24" step="0.5" value="1">
+                        <span class="value-display" id="val-opA-coarse">1.0</span>
+                    </div>
+                    <div class="control-item">
+                        <label>Fine</label>
+                        <input type="range" id="opA-fine" min="-1000" max="1000" step="10" value="0">
+                        <span class="value-display" id="val-opA-fine">0</span>
+                    </div>
+                    <div class="control-item">
+                        <label>Level (Fixed 1.0)</label>
+                        <input type="range" disabled value="1" style="opacity: 0.5;">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="keyboard-help">
+            <p>Use keyboard <strong>A-K</strong> to play. Click page to start audio engine.</p>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
