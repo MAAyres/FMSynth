@@ -311,11 +311,14 @@ select.wave-select:focus {
     bottom: 0;
     left: 0;
     right: 0;
-    height: 140px;
+    height: 180px;
+    /* Taller for octave controls */
     background: var(--bg-color);
     border-top: 1px solid var(--accent-secondary);
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    /* Stack controls and keys */
+    align-items: center;
     padding: 10px;
     z-index: 200;
     transform: translateY(100%);

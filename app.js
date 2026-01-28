@@ -209,6 +209,7 @@ class AudioEngine {
             this.masterGain.gain.value = value;
         } else if (param === 'spread') {
             this.spread = value;
+            Object.values(this.voices).forEach(voice => voice.updateSpread(this.spread));
         } else if (param === 'saturation') {
             this.saturator.curve = this.makeDistortionCurve(value);
         } else if (this.envelope[param] !== undefined) {
@@ -401,6 +402,34 @@ class FMVoice {
         [this.chainL, this.chainR].forEach(chain => {
             const op = chain[`op${opId}`];
             if (op) op.setParam(param, value);
+
+            // If spread changes re-trigger freq update? 
+            // Better: updateOp handles standard params.
+            // spread needs special handling. 
+            // Let's hack: whenever coarse changes, we re-apply spread logic in Operator.updateFreq?
+            // Actually, we need to pass Spread down to Operator or handle it here.
+
+            // Simplified: The User requested real-time spread.
+            // setGlobalParam('spread') calls updateOp('A'...) which is a hack.
+            // Let's make a proper updateSpread method in Voice.
+        });
+    }
+
+    updateSpread(newSpread) {
+        this.spread = newSpread;
+        // Re-apply freq to all ops with new spread
+        [this.chainL, this.chainR].forEach((chain, i) => {
+            const pan = i === 0 ? -1 : 1;
+            const spreadDetune = (this.spread / 100) * 15 * pan;
+            ['A', 'B', 'C', 'D'].forEach(id => {
+                // We need to re-set the base freq + detune
+                // But Operator class manages freq = base * coarse.
+                // We need to update the Operator's baseFreq or just trick it.
+                // Let's update baseFreq of the operator.
+                const op = chain[`op${id}`];
+                op.baseFreq = this.freq + spreadDetune;
+                op.updateFreq();
+            });
         });
     }
 
@@ -454,6 +483,12 @@ class Operator {
         if (this.isModulator) this.gain.gain.value = this.params.level * 2000;
         else this.gain.gain.value = 1.0;
     }
+    // Added updateSpread helper
+    updateSpread(spreadAmt, pan) {
+        // Recalculate freq with new spread
+        const spreadDetune = (spreadAmt / 100) * 15 * pan;
+        this.osc.frequency.value = (this.baseFreq + spreadDetune) * this.params.coarse;
+    }
     setParam(param, value) {
         this.params[param] = value;
         if (param === 'wave') this.updateWave();
@@ -492,42 +527,55 @@ class Visualizer {
         requestAnimationFrame(() => this.loop());
         this.analyserL.getByteTimeDomainData(this.dataL);
         this.analyserR.getByteTimeDomainData(this.dataR);
-        this.ctx.fillStyle = 'rgba(11, 20, 30, 0.4)';
+        this.ctx.fillStyle = 'rgba(11, 20, 30, 0.4)'; // Clearing with Navy
         this.ctx.fillRect(0, 0, this.width, this.height);
 
-        // Calculate Dynamic Color logic
-        // Op B (Pink #ff2a6d), Op C (Orange #ff9d00), Op D (Yellow #ffd700), Base Teal (#00d2ff)
+        // Dynamic Color for Background V/T Wave
         const lvlB = this.engine.ops.B.level;
         const lvlC = this.engine.ops.C.level;
         const lvlD = this.engine.ops.D.level;
-        const total = lvlB + lvlC + lvlD + 0.5; // Base weight
 
-        // Very basic color mix - lerp CSS HSL? simpler RGB mix or just pick dominant
-        // Let's pick dominant for "glow" effect as requested visualization of "influence"
+        let influenceColor = 'rgba(0, 210, 255, 0.3)'; // Default Teal Low Opacity
+        if (lvlC > lvlB && lvlC > lvlD && lvlC > 0.2) influenceColor = 'rgba(255, 157, 0, 0.3)'; // Orange
+        else if (lvlD > lvlB && lvlD > lvlC && lvlD > 0.2) influenceColor = 'rgba(255, 215, 0, 0.3)'; // Yellow
+        else if (lvlB > 0.2) influenceColor = 'rgba(255, 42, 109, 0.3)'; // Pink
 
-        let stroke = '#00d2ff'; // Default Teal
-        let shadow = '#00d2ff';
-
-        // Simple threshold dominance
-        if (lvlC > lvlB && lvlC > lvlD && lvlC > 0.2) { stroke = '#ff9d00'; shadow = '#ff9d00'; } // Orange
-        else if (lvlD > lvlB && lvlD > lvlC && lvlD > 0.2) { stroke = '#ffd700'; shadow = '#ffd700'; } // Yellow
-        else if (lvlB > 0.2) { stroke = '#ff2a6d'; shadow = '#ff2a6d'; } // Pink (Top priority if others aren't significantly louder)
-
-        // Or blend? Canvas strokeStyle needs string.
-
-        this.ctx.lineWidth = 2;
-        this.ctx.strokeStyle = stroke;
-        this.ctx.shadowBlur = 5;
-        this.ctx.shadowColor = shadow;
-
+        // 1. Draw Background V/T Wave (Mono Mix)
+        this.ctx.lineWidth = 4;
+        this.ctx.strokeStyle = influenceColor;
+        this.ctx.shadowBlur = 0;
         this.ctx.beginPath();
+        const sliceWidth = this.width * 1.0 / this.bufferLength;
+        let x = 0;
+
+        for (let i = 0; i < this.bufferLength; i++) {
+            const v = (this.dataL[i] / 128.0) * 0.9; // Scale slightly
+            const y = (v * this.height / 2) + (this.height / 2 - this.height / 2); // Center?
+            // Wait, v=1 is center. data is 0-255. 128 is 0.
+            // normal: (val / 128) - 1 => -1 to 1.
+            const vNorm = (this.dataL[i] / 128.0) - 1.0;
+            const yPos = (vNorm * this.height / 2) + (this.height / 2);
+
+            if (i === 0) this.ctx.moveTo(x, yPos);
+            else this.ctx.lineTo(x, yPos);
+            x += sliceWidth;
+        }
+        this.ctx.stroke();
+
+        // 2. Draw Foreground XY Scope (Teal)
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeStyle = '#00d2ff';
+        this.ctx.shadowBlur = 4;
+        this.ctx.shadowColor = '#00d2ff';
+        this.ctx.beginPath();
+
         const scale = 0.5;
         for (let i = 0; i < this.bufferLength; i += 2) {
             const vL = (this.dataL[i] / 128.0) - 1.0;
             const vR = (this.dataR[i] / 128.0) - 1.0;
-            const x = (vL * scale * Math.min(this.width, this.height)) + (this.width / 2);
-            const y = (vR * scale * Math.min(this.width, this.height)) + (this.height / 2);
-            if (i === 0) this.ctx.moveTo(x, y); else this.ctx.lineTo(x, y);
+            const xScope = (vL * scale * Math.min(this.width, this.height)) + (this.width / 2);
+            const yScope = (vR * scale * Math.min(this.width, this.height)) + (this.height / 2);
+            if (i === 0) this.ctx.moveTo(xScope, yScope); else this.ctx.lineTo(xScope, yScope);
         }
         this.ctx.stroke();
     }
@@ -635,7 +683,11 @@ class InputManager {
         // Init Knobs
         // Global
         new RotaryKnob('volume-k', 'Volume', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setGlobalParam('volume', v));
-        new RotaryKnob('spread-k', 'Spread', 0, 100, 1, 0, (v) => this.audioEngine.setGlobalParam('spread', v));
+        new RotaryKnob('spread-k', 'Spread', 0, 1, 0.001, 0, (v) => {
+            // Non-linear mapping: v^2 * 100
+            const spreadVal = v * v * 100;
+            this.audioEngine.setGlobalParam('spread', spreadVal);
+        }, (v) => Math.round(v * v * 100)); // Display map
         new RotaryKnob('saturation-k', 'Sat', 0, 1, 0.01, 0, (v) => this.audioEngine.setGlobalParam('saturation', v)); // New
 
         // Amp Env (ADSR)
