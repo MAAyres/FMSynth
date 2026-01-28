@@ -95,8 +95,8 @@
                         <div id="f-res-k"></div>
                     </div>
                     <div style="display:flex; justify-content:space-between;">
-                        <div id="f-drive-k"></div>
-                        <div id="f-env-amt-k"></div>
+                        <!-- Drive removed here -->
+                        <div id="f-env-amt-k" style="width: 100%; display: flex; justify-content: center;"></div>
                     </div>
                 </div>
 
@@ -117,6 +117,7 @@
                 <div class="module">
                     <div class="module-header">MASTER</div>
                     <div id="volume-k"></div>
+                    <div id="saturation-k"></div> <!-- New Saturation -->
                     <div id="spread-k"></div>
                 </div>
 
@@ -134,7 +135,14 @@
 
         <!-- Virtual Keyboard -->
         <div id="virtual-keyboard" class="virtual-keyboard">
-            <!-- Keys injected by JS -->
+            <div class="octave-controls">
+                <button id="oct-down" class="oct-btn">&lt; OCT</button>
+                <span id="oct-disp">0</span>
+                <button id="oct-up" class="oct-btn">OCT &gt;</button>
+            </div>
+            <div class="keys-container" id="keys-container">
+                <!-- Keys injected by JS -->
+            </div>
         </div>
     </div>
 

@@ -128,9 +128,16 @@ class RotaryKnob {
 class AudioEngine {
     constructor() {
         this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+        // Master Chain: MasterMix -> Saturation -> Splitter -> Destination
         this.masterGain = this.ctx.createGain();
-        this.masterGain.connect(this.ctx.destination);
         this.masterGain.gain.value = 0.5;
+
+        // Saturation Node
+        this.saturator = this.ctx.createWaveShaper();
+        this.saturator.curve = this.makeDistortionCurve(0);
+
+        this.masterGain.connect(this.saturator);
 
         // Visualizer Analysis
         this.analyserL = this.ctx.createAnalyser();
@@ -139,7 +146,11 @@ class AudioEngine {
         this.analyserR.fftSize = 2048;
 
         this.splitter = this.ctx.createChannelSplitter(2);
-        this.masterGain.connect(this.splitter);
+        this.saturator.connect(this.splitter); // Post-saturation visualization
+        this.saturator.connect(this.ctx.destination); // Output to speakers directly? 
+        // Logic check: Splitter is for analysis. We also need to hear it.
+        // Saturator -> Destination AND Splitter? Yes.
+
         this.splitter.connect(this.analyserL, 0);
         this.splitter.connect(this.analyserR, 1);
 
@@ -153,15 +164,15 @@ class AudioEngine {
         };
 
         this.spread = 0;
+        this.globalOctave = 0; // -2 to +2
 
         this.envelope = {
             attack: 0.05, decay: 0.3, sustain: 0.7, release: 1.0
         };
 
         this.filter = {
-            cutoff: 0.8, // 0-1 linear knob
+            cutoff: 0.8,
             res: 0,
-            drive: 0,
             envAmt: 0
         };
 
@@ -170,12 +181,25 @@ class AudioEngine {
         };
     }
 
-    // Logarithmic Mapping
+    makeDistortionCurve(amount) {
+        const k = amount * 100;
+        const n_samples = 44100;
+        const curve = new Float32Array(n_samples);
+        const deg = Math.PI / 180;
+        if (amount === 0) {
+            for (let i = 0; i < n_samples; ++i) curve[i] = (i * 2) / n_samples - 1;
+        } else {
+            for (let i = 0; i < n_samples; ++i) {
+                let x = (i * 2) / n_samples - 1;
+                curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x));
+            }
+        }
+        return curve;
+    }
+
     getLogCutoff(normVal) {
-        // Map 0-1 to 20Hz - 20000Hz
         const min = 20;
         const max = 20000;
-        // Exponential scale: y = min * (max/min)^x
         if (normVal <= 0.001) return min;
         return min * Math.pow(max / min, normVal);
     }
@@ -185,9 +209,16 @@ class AudioEngine {
             this.masterGain.gain.value = value;
         } else if (param === 'spread') {
             this.spread = value;
+        } else if (param === 'saturation') {
+            this.saturator.curve = this.makeDistortionCurve(value);
         } else if (this.envelope[param] !== undefined) {
             this.envelope[param] = value;
         }
+    }
+
+    setOctave(delta) {
+        this.globalOctave = Math.max(-2, Math.min(2, this.globalOctave + delta));
+        return this.globalOctave;
     }
 
     setFilterParam(param, value) {
@@ -195,7 +226,6 @@ class AudioEngine {
             this.filter[param] = value;
             Object.values(this.voices).forEach(voice => {
                 if (param === 'cutoff') {
-                    // Convert Linear Knob to Log Freq
                     const freq = this.getLogCutoff(value);
                     voice.updateFilter('cutoff', freq);
                 } else {
@@ -220,11 +250,14 @@ class AudioEngine {
         if (this.ctx.state === 'suspended') this.ctx.resume();
         if (this.voices[note]) this.voices[note].stop();
 
-        // Pass calculated cutoff, not linear 0-1
         const logCutoff = this.getLogCutoff(this.filter.cutoff);
+        // Apply Global Octave shift
+        // Multiply freq by 2^octave
+        const shiftFactor = Math.pow(2, this.globalOctave);
+        const shiftedFreq = freq * shiftFactor;
 
-        const voice = new FMVoice(this.ctx, freq, this.ops, this.envelope,
-            { ...this.filter, cutoff: logCutoff }, // Override linearly mapped cutoff with Log freq
+        const voice = new FMVoice(this.ctx, shiftedFreq, this.ops, this.envelope,
+            { ...this.filter, cutoff: logCutoff },
             this.filterEnv, this.spread, this.masterGain);
 
         voice.start();
@@ -239,13 +272,12 @@ class AudioEngine {
 }
 
 class LadderFilter {
-    constructor(ctx, startFreq, res, drive) {
+    constructor(ctx, startFreq, res) {
         this.ctx = ctx;
         this.input = ctx.createGain();
         this.output = ctx.createGain();
 
-        this.shaper = ctx.createWaveShaper();
-        this.shaper.curve = this.makeDistortionCurve(drive);
+        // No more drive shaper here
 
         this.lpf1 = ctx.createBiquadFilter();
         this.lpf1.type = 'lowpass';
@@ -257,8 +289,7 @@ class LadderFilter {
 
         this.setCutoff(startFreq);
 
-        this.input.connect(this.shaper);
-        this.shaper.connect(this.lpf1);
+        this.input.connect(this.lpf1);
         this.lpf1.connect(this.lpf2);
         this.lpf2.connect(this.output);
     }
@@ -275,25 +306,7 @@ class LadderFilter {
         this.lpf2.Q.setTargetAtTime(q, this.ctx.currentTime, 0.01);
     }
 
-    setDrive(amount) {
-        this.shaper.curve = this.makeDistortionCurve(amount);
-    }
-
-    makeDistortionCurve(amount) {
-        const k = amount * 100; // Scale up drive feel
-        const n_samples = 44100;
-        const curve = new Float32Array(n_samples);
-        const deg = Math.PI / 180;
-        if (amount === 0) {
-            for (let i = 0; i < n_samples; ++i) curve[i] = (i * 2) / n_samples - 1;
-        } else {
-            for (let i = 0; i < n_samples; ++i) {
-                let x = (i * 2) / n_samples - 1;
-                curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x));
-            }
-        }
-        return curve;
-    }
+    // Drive removed
 }
 
 class FMVoice {
@@ -316,7 +329,7 @@ class FMVoice {
         panner.pan.value = panPos;
         panner.connect(this.destination);
 
-        const filter = new LadderFilter(this.ctx, this.filterParams.cutoff, this.filterParams.res, this.filterParams.drive);
+        const filter = new LadderFilter(this.ctx, this.filterParams.cutoff, this.filterParams.res);
         filter.output.connect(panner);
 
         const envGain = this.ctx.createGain();
@@ -381,7 +394,6 @@ class FMVoice {
         [this.chainL, this.chainR].forEach(chain => {
             if (param === 'cutoff') chain.filter.setCutoff(value);
             else if (param === 'res') chain.filter.setRes(value);
-            else if (param === 'drive') chain.filter.setDrive(value);
         });
     }
 
@@ -454,11 +466,13 @@ class Operator {
 }
 
 class Visualizer {
-    constructor(canvas, analyserL, analyserR) {
+    constructor(canvas, analyserL, analyserR, engine) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
         this.analyserL = analyserL;
         this.analyserR = analyserR;
+        this.engine = engine; // Needed for Op levels
+
         this.width = canvas.width;
         this.height = canvas.height;
         this.resize();
@@ -478,12 +492,34 @@ class Visualizer {
         requestAnimationFrame(() => this.loop());
         this.analyserL.getByteTimeDomainData(this.dataL);
         this.analyserR.getByteTimeDomainData(this.dataR);
-        this.ctx.fillStyle = 'rgba(11, 20, 30, 0.4)'; // Clearing with Navy
+        this.ctx.fillStyle = 'rgba(11, 20, 30, 0.4)';
         this.ctx.fillRect(0, 0, this.width, this.height);
+
+        // Calculate Dynamic Color logic
+        // Op B (Pink #ff2a6d), Op C (Orange #ff9d00), Op D (Yellow #ffd700), Base Teal (#00d2ff)
+        const lvlB = this.engine.ops.B.level;
+        const lvlC = this.engine.ops.C.level;
+        const lvlD = this.engine.ops.D.level;
+        const total = lvlB + lvlC + lvlD + 0.5; // Base weight
+
+        // Very basic color mix - lerp CSS HSL? simpler RGB mix or just pick dominant
+        // Let's pick dominant for "glow" effect as requested visualization of "influence"
+
+        let stroke = '#00d2ff'; // Default Teal
+        let shadow = '#00d2ff';
+
+        // Simple threshold dominance
+        if (lvlC > lvlB && lvlC > lvlD && lvlC > 0.2) { stroke = '#ff9d00'; shadow = '#ff9d00'; } // Orange
+        else if (lvlD > lvlB && lvlD > lvlC && lvlD > 0.2) { stroke = '#ffd700'; shadow = '#ffd700'; } // Yellow
+        else if (lvlB > 0.2) { stroke = '#ff2a6d'; shadow = '#ff2a6d'; } // Pink (Top priority if others aren't significantly louder)
+
+        // Or blend? Canvas strokeStyle needs string.
+
         this.ctx.lineWidth = 2;
-        this.ctx.strokeStyle = '#00d2ff'; // Teal
+        this.ctx.strokeStyle = stroke;
         this.ctx.shadowBlur = 5;
-        this.ctx.shadowColor = '#00d2ff';
+        this.ctx.shadowColor = shadow;
+
         this.ctx.beginPath();
         const scale = 0.5;
         for (let i = 0; i < this.bufferLength; i += 2) {
@@ -513,6 +549,11 @@ class InputManager {
         window.addEventListener('keydown', (e) => {
             if (e.repeat) return;
             const key = e.key.toLowerCase();
+
+            // Octave Shortcuts
+            if (key === 'z') this.changeOctave(-1);
+            if (key === 'x') this.changeOctave(1);
+
             if (this.keyboardMap[key]) {
                 const button = document.querySelector(`[data-key="${key}"]`);
                 if (button) button.classList.add('active');
@@ -529,13 +570,29 @@ class InputManager {
         });
     }
 
+    changeOctave(delta) {
+        const val = this.audioEngine.setOctave(delta);
+        const disp = document.getElementById('oct-disp');
+        if (disp) {
+            const sign = val >= 0 ? '+' : '';
+            disp.innerText = sign + val;
+        }
+    }
+
     setupVirtualKeyboard() {
         const kbContainer = document.getElementById('virtual-keyboard');
+        const keysContainer = document.getElementById('keys-container');
         const toggle = document.getElementById('mobile-toggle');
+
         toggle.addEventListener('click', () => {
             kbContainer.classList.toggle('active');
             toggle.classList.toggle('active');
         });
+
+        // Octave Buttons
+        document.getElementById('oct-down').addEventListener('click', () => this.changeOctave(-1));
+        document.getElementById('oct-up').addEventListener('click', () => this.changeOctave(1));
+
         const notes = [
             { key: 'a', note: 'C4', type: 'white' },
             { key: 'w', note: 'C#4', type: 'black' },
@@ -570,7 +627,7 @@ class InputManager {
             btn.addEventListener('mouseleave', stop);
             btn.addEventListener('touchstart', start);
             btn.addEventListener('touchend', stop);
-            kbContainer.appendChild(btn);
+            keysContainer.appendChild(btn);
         });
     }
 
@@ -579,6 +636,7 @@ class InputManager {
         // Global
         new RotaryKnob('volume-k', 'Volume', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setGlobalParam('volume', v));
         new RotaryKnob('spread-k', 'Spread', 0, 100, 1, 0, (v) => this.audioEngine.setGlobalParam('spread', v));
+        new RotaryKnob('saturation-k', 'Sat', 0, 1, 0.01, 0, (v) => this.audioEngine.setGlobalParam('saturation', v)); // New
 
         // Amp Env (ADSR)
         new RotaryKnob('attack-k', 'A', 0.01, 2, 0.01, 0.05, (v) => this.audioEngine.setGlobalParam('attack', v));
@@ -590,7 +648,7 @@ class InputManager {
         // Cutoff: 0-1 linear sent to param input, engine maps to Log
         new RotaryKnob('f-cutoff-k', 'Cutoff', 0.0, 1.0, 0.001, 0.8, (v) => this.audioEngine.setFilterParam('cutoff', v));
         new RotaryKnob('f-res-k', 'Res', 0, 20, 0.1, 0, (v) => this.audioEngine.setFilterParam('res', v));
-        new RotaryKnob('f-drive-k', 'Drive', 0, 1, 0.01, 0, (v) => this.audioEngine.setFilterParam('drive', v));
+        // Removed f-drive-k binding
         new RotaryKnob('f-env-amt-k', 'Env', 0, 10000, 100, 0, (v) => this.audioEngine.setFilterParam('envAmt', v));
 
         // Filter Env
@@ -626,6 +684,7 @@ class InputManager {
 // Init
 window.addEventListener('DOMContentLoaded', () => {
     const engine = new AudioEngine();
-    const visualizer = new Visualizer(document.getElementById('oscilloscope'), engine.analyserL, engine.analyserR);
+    // Pass engine to visualizer
+    const visualizer = new Visualizer(document.getElementById('oscilloscope'), engine.analyserL, engine.analyserR, engine);
     const inputs = new InputManager(engine);
 });
