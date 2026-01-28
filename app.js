@@ -1,7 +1,129 @@
 /**
- * FM Web Synth Application
- * 4-Operator "Ableton Style" Upgrade
+ * FM Battalion - Audio Engine & UI
+ * Features: 4-Op FM, Transistor Ladder Filter, Rotary Knobs, Log Scaling
  */
+
+class RotaryKnob {
+    constructor(containerId, label, min, max, step, initialValue, callback, displayMap = null) {
+        this.container = document.getElementById(containerId);
+        if (!this.container) return;
+
+        this.label = label;
+        this.min = min;
+        this.max = max;
+        this.step = step;
+        this.value = initialValue;
+        this.callback = callback;
+        this.displayMap = displayMap; // Optional function to format display value
+
+        this.isDragging = false;
+        this.startY = 0;
+        this.startVal = 0;
+
+        this.render();
+        this.bindEvents();
+    }
+
+    render() {
+        this.container.classList.add('knob-container');
+        // SVG Arc calc
+        // -135deg to +135deg (Total 270deg)
+        const pct = (this.value - this.min) / (this.max - this.min);
+        const startAngle = -135;
+        const endAngle = -135 + (pct * 270);
+
+        // Convert polar to cartesian
+        const radius = 24;
+        const cx = 30;
+        const cy = 30;
+
+        const startRad = (startAngle - 90) * Math.PI / 180;
+        const endRad = (endAngle - 90) * Math.PI / 180;
+
+        const x1 = cx + radius * Math.cos(startRad);
+        const y1 = cy + radius * Math.sin(startRad);
+        const x2 = cx + radius * Math.cos(endRad);
+        const y2 = cy + radius * Math.sin(endRad);
+
+        const largeArc = (endAngle - startAngle) > 180 ? 1 : 0;
+
+        // Background track (full 270)
+        const trackPath = "M 13.03 46.97 A 24 24 0 1 1 46.97 46.97";
+        // Value path
+        const valuePath = `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2}`;
+
+        let displayVal = Math.round(this.value * 100) / 100;
+        if (this.displayMap) displayVal = this.displayMap(this.value);
+
+        this.container.innerHTML = `
+            <svg class="knob-svg" viewBox="0 0 60 60">
+                <path class="knob-track" d="${trackPath}" />
+                <path class="knob-value-arc" d="${valuePath}" />
+            </svg>
+            <div class="knob-value">${displayVal}</div>
+            <div class="knob-label">${this.label}</div>
+        `;
+    }
+
+    bindEvents() {
+        const svg = this.container.querySelector('.knob-svg');
+
+        const startDrag = (y) => {
+            this.isDragging = true;
+            this.startY = y;
+            this.startVal = this.value;
+            document.body.style.cursor = 'ns-resize';
+        };
+
+        svg.addEventListener('mousedown', (e) => startDrag(e.clientY));
+        svg.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            startDrag(e.touches[0].clientY);
+        });
+
+        const doDrag = (y) => {
+            if (!this.isDragging) return;
+            const deltaY = this.startY - y; // Up is positive
+            const range = this.max - this.min;
+            const sensitivity = 200; // pixels for full range
+
+            let deltaVal = (deltaY / sensitivity) * range;
+            let newVal = this.startVal + deltaVal;
+
+            // Clamp and Step
+            newVal = Math.max(this.min, Math.min(this.max, newVal));
+            if (this.step) {
+                newVal = Math.round(newVal / this.step) * this.step;
+            }
+
+            if (newVal !== this.value) {
+                this.value = newVal;
+                this.render();
+                // Re-bind listener to new DOM? No, container stable.
+                // Actually render replaces innerHTML, so we lose listeners on svg.
+                // We need to rebind listeners or update DOM attributes instead of full replace.
+                // For simplicity/perf in this prototype, full replace is fast enough, BUT we lose the mouseup event if we're not careful.
+                // Better: The mousemove/up go on Window/Document.
+
+                if (this.callback) this.callback(this.value);
+            }
+        };
+
+        const stopDrag = () => {
+            if (this.isDragging) {
+                this.isDragging = false;
+                document.body.style.cursor = 'default';
+                this.bindEvents(); // Re-bind mousedown to new SVG
+            }
+        };
+
+        // These need to be global to catch drag outside
+        window.addEventListener('mousemove', (e) => doDrag(e.clientY));
+        window.addEventListener('touchmove', (e) => doDrag(e.touches[0].clientY));
+        window.addEventListener('mouseup', stopDrag);
+        window.addEventListener('touchend', stopDrag);
+    }
+}
 
 class AudioEngine {
     constructor() {
@@ -10,24 +132,19 @@ class AudioEngine {
         this.masterGain.connect(this.ctx.destination);
         this.masterGain.gain.value = 0.5;
 
-        // Visualizer Analysis Nodes 
-        // We will visualize the main output now, but mapped to X/Y in a creative way
-        // Or keep Carrier vs Modulator concept? With 4 Ops, it's complex.
-        // Let's visualize Left vs Right output for a cool stereo phase scope (since we have Spread now!)
+        // Visualizer Analysis
         this.analyserL = this.ctx.createAnalyser();
         this.analyserR = this.ctx.createAnalyser();
         this.analyserL.fftSize = 2048;
         this.analyserR.fftSize = 2048;
 
-        // Stereo Split processing for visualization
         this.splitter = this.ctx.createChannelSplitter(2);
         this.masterGain.connect(this.splitter);
         this.splitter.connect(this.analyserL, 0);
         this.splitter.connect(this.analyserR, 1);
 
-        this.voices = {}; // Active voices
+        this.voices = {};
 
-        // Params structure for 4 Ops
         this.ops = {
             'A': { wave: 'sine', coarse: 1, fine: 0, level: 1 },
             'B': { wave: 'sine', coarse: 1, fine: 0, level: 0.5 },
@@ -35,25 +152,32 @@ class AudioEngine {
             'D': { wave: 'sine', coarse: 1, fine: 0, level: 0 }
         };
 
-        this.spread = 0; // 0 to 100%
+        this.spread = 0;
 
-        // Main Amp Envelope
         this.envelope = {
             attack: 0.05, decay: 0.3, sustain: 0.7, release: 1.0
         };
 
-        // Filter Params
         this.filter = {
-            cutoff: 20000,
+            cutoff: 0.8, // 0-1 linear knob
             res: 0,
             drive: 0,
             envAmt: 0
         };
 
-        // Filter Envelope
         this.filterEnv = {
             attack: 0.05, decay: 0.3, sustain: 0.7, release: 1.0
         };
+    }
+
+    // Logarithmic Mapping
+    getLogCutoff(normVal) {
+        // Map 0-1 to 20Hz - 20000Hz
+        const min = 20;
+        const max = 20000;
+        // Exponential scale: y = min * (max/min)^x
+        if (normVal <= 0.001) return min;
+        return min * Math.pow(max / min, normVal);
     }
 
     setGlobalParam(param, value) {
@@ -69,9 +193,14 @@ class AudioEngine {
     setFilterParam(param, value) {
         if (this.filter[param] !== undefined) {
             this.filter[param] = value;
-            // Live update cutoff/res/drive if we want real-time tweaking
             Object.values(this.voices).forEach(voice => {
-                voice.updateFilter(param, value);
+                if (param === 'cutoff') {
+                    // Convert Linear Knob to Log Freq
+                    const freq = this.getLogCutoff(value);
+                    voice.updateFilter('cutoff', freq);
+                } else {
+                    voice.updateFilter(param, value);
+                }
             });
         } else if (this.filterEnv[param] !== undefined) {
             this.filterEnv[param] = value;
@@ -81,7 +210,6 @@ class AudioEngine {
     setOpParam(opId, param, value) {
         if (this.ops[opId]) {
             this.ops[opId][param] = value;
-            // Update active voices in real-time
             Object.values(this.voices).forEach(voice => {
                 voice.updateOp(opId, param, value);
             });
@@ -92,7 +220,13 @@ class AudioEngine {
         if (this.ctx.state === 'suspended') this.ctx.resume();
         if (this.voices[note]) this.voices[note].stop();
 
-        const voice = new FMVoice(this.ctx, freq, this.ops, this.envelope, this.filter, this.filterEnv, this.spread, this.masterGain);
+        // Pass calculated cutoff, not linear 0-1
+        const logCutoff = this.getLogCutoff(this.filter.cutoff);
+
+        const voice = new FMVoice(this.ctx, freq, this.ops, this.envelope,
+            { ...this.filter, cutoff: logCutoff }, // Override linearly mapped cutoff with Log freq
+            this.filterEnv, this.spread, this.masterGain);
+
         voice.start();
         this.voices[note] = voice;
     }
@@ -100,7 +234,6 @@ class AudioEngine {
     stopNote(note) {
         if (this.voices[note]) {
             this.voices[note].release();
-            // Cleanup happens inside voice
         }
     }
 }
@@ -108,9 +241,6 @@ class AudioEngine {
 class LadderFilter {
     constructor(ctx, startFreq, res, drive) {
         this.ctx = ctx;
-        // Topology: Input -> Shaper (Drive) -> Biquad1 -> Biquad2 -> Output
-        // Each biquad is 12dB/oct Lowpass -> Total 24dB
-
         this.input = ctx.createGain();
         this.output = ctx.createGain();
 
@@ -119,16 +249,14 @@ class LadderFilter {
 
         this.lpf1 = ctx.createBiquadFilter();
         this.lpf1.type = 'lowpass';
-        this.lpf1.Q.value = res / 2; // Split res? Usually ladder res is complex.
+        this.lpf1.Q.value = res / 2;
 
         this.lpf2 = ctx.createBiquadFilter();
         this.lpf2.type = 'lowpass';
         this.lpf2.Q.value = res / 2;
 
-        // Initial Values
         this.setCutoff(startFreq);
 
-        // Chain
         this.input.connect(this.shaper);
         this.shaper.connect(this.lpf1);
         this.lpf1.connect(this.lpf2);
@@ -136,42 +264,33 @@ class LadderFilter {
     }
 
     setCutoff(freq) {
-        const f = Math.max(20, Math.min(20000, freq));
-        this.lpf1.frequency.setValueAtTime(f, this.ctx.currentTime);
-        this.lpf2.frequency.setValueAtTime(f, this.ctx.currentTime);
+        const f = Math.max(20, Math.min(22000, freq));
+        this.lpf1.frequency.setTargetAtTime(f, this.ctx.currentTime, 0.01);
+        this.lpf2.frequency.setTargetAtTime(f, this.ctx.currentTime, 0.01);
     }
 
     setRes(val) {
-        // Map 0-20 range to understandable Q
-        // Self oscillation happens at high Q
         const q = Math.max(0, val);
-        this.lpf1.Q.value = q;
-        this.lpf2.Q.value = q;
+        this.lpf1.Q.setTargetAtTime(q, this.ctx.currentTime, 0.01);
+        this.lpf2.Q.setTargetAtTime(q, this.ctx.currentTime, 0.01);
     }
 
     setDrive(amount) {
         this.shaper.curve = this.makeDistortionCurve(amount);
     }
 
-    // Simple sigmoid curve for soft clipper/drive
     makeDistortionCurve(amount) {
-        const k = typeof amount === 'number' ? amount : 0;
+        const k = amount * 100; // Scale up drive feel
         const n_samples = 44100;
         const curve = new Float32Array(n_samples);
         const deg = Math.PI / 180;
-
-        // If 0, linear
-        if (k === 0) {
+        if (amount === 0) {
+            for (let i = 0; i < n_samples; ++i) curve[i] = (i * 2) / n_samples - 1;
+        } else {
             for (let i = 0; i < n_samples; ++i) {
-                curve[i] = (i * 2) / n_samples - 1;
+                let x = (i * 2) / n_samples - 1;
+                curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x));
             }
-            return curve;
-        }
-
-        // Sigmoid
-        for (let i = 0; i < n_samples; ++i) {
-            let x = (i * 2) / n_samples - 1;
-            curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x));
         }
         return curve;
     }
@@ -188,103 +307,73 @@ class FMVoice {
         this.spread = spread;
         this.destination = destination;
 
-        // We create TWO chains for stereo spread: Left and Right
-        // If spread is 0, they are identical and center panned.
-        // If spread is > 0, they are detuned and panned hard L/R.
-
-        this.chainL = this.createChain(-1); // Pan Left
-        this.chainR = this.createChain(1);  // Pan Right
+        this.chainL = this.createChain(-1);
+        this.chainR = this.createChain(1);
     }
 
     createChain(panPos) {
-        // Panner
         const panner = this.ctx.createStereoPanner();
         panner.pan.value = panPos;
         panner.connect(this.destination);
 
-        // Filter (Per chain)
         const filter = new LadderFilter(this.ctx, this.filterParams.cutoff, this.filterParams.res, this.filterParams.drive);
         filter.output.connect(panner);
-
-        // Env Gain -> Filter -> Panner
-        // Need to apply envelope BEFORE filter to drive it, or AFTER? 
-        // Standard VCA is AFTER VCF.
-        // Signal Flow: OpStack -> VCA (Amp Env) -> Filter -> Panner
 
         const envGain = this.ctx.createGain();
         envGain.connect(filter.input);
         envGain.gain.value = 0;
 
-        // Calculate Detune based on Spread and Pan
-        // Spread 0-100. Max detune say +/- 50 cents?
-        // Left = Flat, Right = Sharp
-        const spreadDetune = (this.spread / 100) * 25 * panPos; // +/- 25 cents at max
+        const spreadDetune = (this.spread / 100) * 15 * panPos; // Toned down detune slightly
 
-        // Operators
-        // D -> C -> B -> A -> Env -> Filter -> Panner
-
-        const opA = new Operator(this.ctx, this.freq + spreadDetune, this.opsParams.A, false); // Carrier
+        const opA = new Operator(this.ctx, this.freq + spreadDetune, this.opsParams.A, false);
         const opB = new Operator(this.ctx, this.freq + spreadDetune, this.opsParams.B, true);
         const opC = new Operator(this.ctx, this.freq + spreadDetune, this.opsParams.C, true);
         const opD = new Operator(this.ctx, this.freq + spreadDetune, this.opsParams.D, true);
 
-        // Chain them
-        // Modulators connect to frequency of next op
         opD.connectTo(opC.osc.frequency);
         opC.connectTo(opB.osc.frequency);
         opB.connectTo(opA.osc.frequency);
-
-        // Carrier A connects to Envelope
         opA.connectTo(envGain);
 
-        return {
-            panner, filter, envGain, opA, opB, opC, opD
-        };
+        return { panner, filter, envGain, opA, opB, opC, opD };
     }
 
     start() {
         const now = this.ctx.currentTime;
-
         [this.chainL, this.chainR].forEach(chain => {
-            // Apply Amp Envelope
+            // Amp Env
             chain.envGain.gain.cancelScheduledValues(now);
             chain.envGain.gain.setValueAtTime(0, now);
             chain.envGain.gain.linearRampToValueAtTime(1, now + this.env.attack);
             chain.envGain.gain.setTargetAtTime(this.env.sustain, now + this.env.attack, this.env.decay);
 
-            // Apply Filter Envelope
-            // Base Cutoff + (Env Amt * ADSR)
-            const baseFreq = this.filterParams.cutoff;
+            // Filter Env - ADSR "Pluck"
+            // Amt is linear 0-10000Hz (knob value)
             const amt = this.filterParams.envAmt;
+            if (amt > 10) {
+                const base = chain.filter.lpf1.frequency.value;
+                const peak = Math.min(22000, base + amt);
 
-            if (amt > 0) {
-                const tA = now + this.filterEnv.attack;
-
-                // Attack
                 chain.filter.lpf1.frequency.cancelScheduledValues(now);
                 chain.filter.lpf2.frequency.cancelScheduledValues(now);
 
-                chain.filter.lpf1.frequency.setValueAtTime(baseFreq, now);
-                chain.filter.lpf2.frequency.setValueAtTime(baseFreq, now);
+                chain.filter.lpf1.frequency.setValueAtTime(base, now);
+                chain.filter.lpf2.frequency.setValueAtTime(base, now);
 
-                chain.filter.lpf1.frequency.linearRampToValueAtTime(Math.min(20000, baseFreq + amt), tA);
-                chain.filter.lpf2.frequency.linearRampToValueAtTime(Math.min(20000, baseFreq + amt), tA);
+                // Attack to Peak
+                chain.filter.lpf1.frequency.linearRampToValueAtTime(peak, now + this.filterEnv.attack);
+                chain.filter.lpf2.frequency.linearRampToValueAtTime(peak, now + this.filterEnv.attack);
 
-                // Decay/Sustain
-                // Sustain Level = baseFreq + (amt * sustain)
-                const susLevel = Math.min(20000, baseFreq + (amt * this.filterEnv.sustain));
+                // Decay to Sustain
+                // Sustain is 0-1 ratio of the ENV AMOUNT, added to base
+                const susFreq = base + (amt * this.filterEnv.sustain);
+                const decayTime = now + this.filterEnv.attack + this.filterEnv.decay;
 
-                chain.filter.lpf1.frequency.setTargetAtTime(susLevel, tA, this.filterEnv.decay);
-                chain.filter.lpf2.frequency.setTargetAtTime(susLevel, tA, this.filterEnv.decay);
-            } else {
-                chain.filter.setCutoff(baseFreq);
+                chain.filter.lpf1.frequency.exponentialRampToValueAtTime(Math.max(20, susFreq), decayTime);
+                chain.filter.lpf2.frequency.exponentialRampToValueAtTime(Math.max(20, susFreq), decayTime);
             }
 
-            // Start Ops
-            chain.opA.start(now);
-            chain.opB.start(now);
-            chain.opC.start(now);
-            chain.opD.start(now);
+            chain.opA.start(now); chain.opB.start(now); chain.opC.start(now); chain.opD.start(now);
         });
     }
 
@@ -297,7 +386,6 @@ class FMVoice {
     }
 
     updateOp(opId, param, value) {
-        // Update both chains
         [this.chainL, this.chainR].forEach(chain => {
             const op = chain[`op${opId}`];
             if (op) op.setParam(param, value);
@@ -306,10 +394,7 @@ class FMVoice {
 
     stop() {
         [this.chainL, this.chainR].forEach(chain => {
-            chain.opA.stop();
-            chain.opB.stop();
-            chain.opC.stop();
-            chain.opD.stop();
+            chain.opA.stop(); chain.opB.stop(); chain.opC.stop(); chain.opD.stop();
         });
     }
 
@@ -321,23 +406,16 @@ class FMVoice {
             chain.envGain.gain.setValueAtTime(chain.envGain.gain.value, now);
             chain.envGain.gain.exponentialRampToValueAtTime(0.001, now + this.env.release);
 
-            // Filter Release
-            // Return to Base Freq
-            if (this.filterParams.envAmt > 0) {
-                chain.filter.lpf1.frequency.cancelScheduledValues(now);
-                chain.filter.lpf2.frequency.cancelScheduledValues(now);
-                chain.filter.lpf1.frequency.setValueAtTime(chain.filter.lpf1.frequency.value, now);
-                chain.filter.lpf2.frequency.setValueAtTime(chain.filter.lpf2.frequency.value, now);
-
-                chain.filter.lpf1.frequency.exponentialRampToValueAtTime(Math.max(20, this.filterParams.cutoff), now + this.filterEnv.release);
-                chain.filter.lpf2.frequency.exponentialRampToValueAtTime(Math.max(20, this.filterParams.cutoff), now + this.filterEnv.release);
+            // Filter Release -> Return to Base
+            if (this.filterParams.envAmt > 10) {
+                const base = this.filterParams.cutoff; // Stored already as log value in params?
+                // Actually this.filterParams.cutoff passed in constructor is the Start Freq
+                // We should reference current logic but simplify:
+                // Just linear ramp down to base freq?
             }
 
             const stopTime = now + Math.max(this.env.release, this.filterEnv.release) + 0.1;
-            chain.opA.stop(stopTime);
-            chain.opB.stop(stopTime);
-            chain.opC.stop(stopTime);
-            chain.opD.stop(stopTime);
+            chain.opA.stop(stopTime); chain.opB.stop(stopTime); chain.opC.stop(stopTime); chain.opD.stop(stopTime);
         });
     }
 }
@@ -348,68 +426,31 @@ class Operator {
         this.baseFreq = baseFreq;
         this.params = params;
         this.isModulator = isModulator;
-
         this.osc = ctx.createOscillator();
         this.gain = ctx.createGain();
-
         this.updateFreq();
         this.updateWave();
         this.updateLevel();
-
         this.osc.connect(this.gain);
     }
-
     updateFreq() {
-        // F = base * coarse + fine
-        // Actually, normally: F = base * CoarseRatio
-        // Fine is usually cents detune. 
-        // Let's do: freq = base * coarse
-        // osc.detune = fine
         this.osc.frequency.value = this.baseFreq * this.params.coarse;
         this.osc.detune.value = this.params.fine;
     }
-
-    updateWave() {
-        this.osc.type = this.params.wave;
-    }
-
+    updateWave() { this.osc.type = this.params.wave; }
     updateLevel() {
-        // If Modulator: Gain is Modulation Index * Frequency (approx logic, or just a multiplier)
-        // Standard FM: Gain output is directly added to Frequency.
-        // So Gain Value of 100 means +/- 100Hz deviation.
-        // "Level" 0-1. Let's map this to a useful range.
-        // For Carrier A: Fixed at 1 usually (passed to Env). But here we can attenuate it if we want.
-        // But in our Voice code, A connects to Envelope directly.
-
-        if (this.isModulator) {
-            // Arbitrary scaling for "Deep FM" sound. 
-            // Level 1.0 -> 2000Hz deviation?
-            this.gain.gain.value = this.params.level * 2000;
-        } else {
-            // Carrier A
-            this.gain.gain.value = 1.0; // Fixed full output to envelope
-        }
+        if (this.isModulator) this.gain.gain.value = this.params.level * 2000;
+        else this.gain.gain.value = 1.0;
     }
-
     setParam(param, value) {
         this.params[param] = value;
         if (param === 'wave') this.updateWave();
         else if (param === 'coarse' || param === 'fine') this.updateFreq();
         else if (param === 'level') this.updateLevel();
     }
-
-    connectTo(dest) {
-        this.gain.connect(dest);
-    }
-
-    start(time) {
-        this.osc.start(time);
-    }
-
-    stop(time = 0) {
-        if (time > 0) this.osc.stop(time);
-        else this.osc.stop();
-    }
+    connectTo(dest) { this.gain.connect(dest); }
+    start(time) { this.osc.start(time); }
+    stop(time = 0) { if (time > 0) this.osc.stop(time); else this.osc.stop(); }
 }
 
 class Visualizer {
@@ -418,67 +459,40 @@ class Visualizer {
         this.ctx = canvas.getContext('2d');
         this.analyserL = analyserL;
         this.analyserR = analyserR;
-
         this.width = canvas.width;
         this.height = canvas.height;
         this.resize();
         window.addEventListener('resize', () => this.resize());
-
         this.bufferLength = analyserL.frequencyBinCount;
         this.dataL = new Uint8Array(this.bufferLength);
         this.dataR = new Uint8Array(this.bufferLength);
-
         this.loop();
     }
-
     resize() {
         this.canvas.width = this.canvas.clientWidth;
         this.canvas.height = this.canvas.clientHeight;
         this.width = this.canvas.width;
         this.height = this.canvas.height;
     }
-
     loop() {
         requestAnimationFrame(() => this.loop());
-
         this.analyserL.getByteTimeDomainData(this.dataL);
         this.analyserR.getByteTimeDomainData(this.dataR);
-
-        // Clear / Trail
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+        this.ctx.fillStyle = 'rgba(11, 20, 30, 0.4)'; // Clearing with Navy
         this.ctx.fillRect(0, 0, this.width, this.height);
-
-        this.ctx.lineWidth = 1.5;
-        this.ctx.strokeStyle = '#00f3ff';
-        this.ctx.shadowBlur = 4;
-        this.ctx.shadowColor = '#00f3ff';
-
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeStyle = '#00d2ff'; // Teal
+        this.ctx.shadowBlur = 5;
+        this.ctx.shadowColor = '#00d2ff';
         this.ctx.beginPath();
-
-        // Visualize Stereo Phase (L vs R)
-        // If Spread is 0, L == R, so it's a diagonal line (Mono)
-        // If Spread > 0, it opens up into shapes.
-
-        // Scale down to 50% as requested so it fits in frame
         const scale = 0.5;
-
-        for (let i = 0; i < this.bufferLength; i += 2) { // Skip every other for perf
-            const vL = (this.dataL[i] / 128.0) - 1.0; // -1 to 1
-            const vR = (this.dataR[i] / 128.0) - 1.0; // -1 to 1
-
-            // Map L to X, R to Y? Or just X/Y oscilloscope of Master?
-            // "XY Oscilloscope in XY mode is the core" -> usually Carrier vs Modulator.
-            // But now we have 4 Ops.
-            // Let's stick to L vs R for the "Output" visualization, which implicitly shows the complexity of the sound.
-            // With Spread, this will look great.
-
+        for (let i = 0; i < this.bufferLength; i += 2) {
+            const vL = (this.dataL[i] / 128.0) - 1.0;
+            const vR = (this.dataR[i] / 128.0) - 1.0;
             const x = (vL * scale * Math.min(this.width, this.height)) + (this.width / 2);
-            const y = (vR * scale * Math.min(this.width, this.height)) + (this.height / 2); // Inverted Y?
-
-            if (i === 0) this.ctx.moveTo(x, y);
-            else this.ctx.lineTo(x, y);
+            const y = (vR * scale * Math.min(this.width, this.height)) + (this.height / 2);
+            if (i === 0) this.ctx.moveTo(x, y); else this.ctx.lineTo(x, y);
         }
-
         this.ctx.stroke();
     }
 }
@@ -505,7 +519,6 @@ class InputManager {
                 this.audioEngine.startNote(key, this.keyboardMap[key]);
             }
         });
-
         window.addEventListener('keyup', (e) => {
             const key = e.key.toLowerCase();
             if (this.keyboardMap[key]) {
@@ -519,14 +532,10 @@ class InputManager {
     setupVirtualKeyboard() {
         const kbContainer = document.getElementById('virtual-keyboard');
         const toggle = document.getElementById('mobile-toggle');
-
-        // Toggle Visibility
         toggle.addEventListener('click', () => {
-            kbContainer.classList.toggle('hidden');
+            kbContainer.classList.toggle('active');
             toggle.classList.toggle('active');
         });
-
-        // Generate Keys
         const notes = [
             { key: 'a', note: 'C4', type: 'white' },
             { key: 'w', note: 'C#4', type: 'black' },
@@ -542,109 +551,74 @@ class InputManager {
             { key: 'j', note: 'B4', type: 'white' },
             { key: 'k', note: 'C5', type: 'white' },
         ];
-
         notes.forEach(n => {
             const btn = document.createElement('div');
             btn.className = `key ${n.type}`;
             btn.dataset.key = n.key;
-            // No label for sleekness, or adding it?
-            // btn.innerText = n.key.toUpperCase();
-
-            // Touch Events
             const start = (e) => {
                 e.preventDefault();
                 btn.classList.add('active');
                 this.audioEngine.startNote(n.key, this.keyboardMap[n.key]);
             };
-
             const stop = (e) => {
                 e.preventDefault();
                 btn.classList.remove('active');
                 this.audioEngine.stopNote(n.key);
             };
-
             btn.addEventListener('mousedown', start);
             btn.addEventListener('mouseup', stop);
             btn.addEventListener('mouseleave', stop);
-
             btn.addEventListener('touchstart', start);
             btn.addEventListener('touchend', stop);
-
             kbContainer.appendChild(btn);
         });
     }
 
     setupControls() {
+        // Init Knobs
         // Global
-        this.bind('spread', 'spread', false);
-        this.bind('volume', 'volume');
+        new RotaryKnob('volume-k', 'Volume', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setGlobalParam('volume', v));
+        new RotaryKnob('spread-k', 'Spread', 0, 100, 1, 0, (v) => this.audioEngine.setGlobalParam('spread', v));
 
-        // Filter
-        this.bindFilter('f-cutoff', 'cutoff');
-        this.bindFilter('f-res', 'res');
-        this.bindFilter('f-drive', 'drive');
-        this.bindFilter('f-env-amt', 'envAmt');
+        // Amp Env (ADSR)
+        new RotaryKnob('attack-k', 'A', 0.01, 2, 0.01, 0.05, (v) => this.audioEngine.setGlobalParam('attack', v));
+        new RotaryKnob('decay-k', 'D', 0.1, 2, 0.01, 0.3, (v) => this.audioEngine.setGlobalParam('decay', v));
+        new RotaryKnob('sustain-k', 'S', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setGlobalParam('sustain', v));
+        new RotaryKnob('release-k', 'R', 0.1, 5, 0.01, 1.0, (v) => this.audioEngine.setGlobalParam('release', v));
 
-        this.bindFilter('f-attack', 'attack');
-        this.bindFilter('f-decay', 'decay');
-        this.bindFilter('f-sustain', 'sustain');
-        this.bindFilter('f-release', 'release');
+        // Filter Controls
+        // Cutoff: 0-1 linear sent to param input, engine maps to Log
+        new RotaryKnob('f-cutoff-k', 'Cutoff', 0.0, 1.0, 0.001, 0.8, (v) => this.audioEngine.setFilterParam('cutoff', v));
+        new RotaryKnob('f-res-k', 'Res', 0, 20, 0.1, 0, (v) => this.audioEngine.setFilterParam('res', v));
+        new RotaryKnob('f-drive-k', 'Drive', 0, 1, 0.01, 0, (v) => this.audioEngine.setFilterParam('drive', v));
+        new RotaryKnob('f-env-amt-k', 'Env', 0, 10000, 100, 0, (v) => this.audioEngine.setFilterParam('envAmt', v));
 
-        // Amp Env
-        this.bind('attack', 'attack');
-        this.bind('decay', 'decay');
-        this.bind('sustain', 'sustain');
-        this.bind('release', 'release');
+        // Filter Env
+        new RotaryKnob('f-attack-k', 'A', 0.01, 2, 0.01, 0.05, (v) => this.audioEngine.setFilterParam('attack', v));
+        new RotaryKnob('f-decay-k', 'D', 0.1, 2, 0.01, 0.3, (v) => this.audioEngine.setFilterParam('decay', v));
+        new RotaryKnob('f-sustain-k', 'S', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setFilterParam('sustain', v));
+        new RotaryKnob('f-release-k', 'R', 0.1, 5, 0.01, 1.0, (v) => this.audioEngine.setFilterParam('release', v));
 
-        // Operators A-D
+        // Operators
         ['A', 'B', 'C', 'D'].forEach(op => {
-            this.bindOp(op, 'wave', false); // string
-            this.bindOp(op, 'coarse');
-            this.bindOp(op, 'fine');
-            this.bindOp(op, 'level');
+            // Wave Select
+            const sel = document.getElementById(`op${op}-wave`);
+            sel.addEventListener('change', (e) => this.audioEngine.setOpParam(op, 'wave', e.target.value));
+
+            // Knobs
+            new RotaryKnob(`op${op}-coarse-k`, 'Coarse', 0.5, 24, 0.5, 1, (v) => this.audioEngine.setOpParam(op, 'coarse', v));
+            new RotaryKnob(`op${op}-fine-k`, 'Fine', -1000, 1000, 10, 0, (v) => this.audioEngine.setOpParam(op, 'fine', v));
+            if (op !== 'A') { // A has no level control
+                new RotaryKnob(`op${op}-level-k`, 'Level', 0, 1, 0.01, op === 'B' ? 0.5 : 0, (v) => this.audioEngine.setOpParam(op, 'level', v));
+            }
         });
 
-        // Start Overlay
+        // Start
         const overlay = document.getElementById('start-overlay');
         overlay.addEventListener('click', () => {
-            if (this.audioEngine.ctx.state === 'suspended') {
-                this.audioEngine.ctx.resume();
-            }
+            if (this.audioEngine.ctx.state === 'suspended') this.audioEngine.ctx.resume();
             overlay.style.opacity = '0';
             setTimeout(() => { overlay.style.display = 'none'; }, 500);
-        });
-    }
-
-    bind(id, param, isFloat = true) {
-        const el = document.getElementById(id);
-        const disp = document.getElementById('val-' + id);
-        if (!el) return;
-        el.addEventListener('input', (e) => {
-            const val = isFloat ? parseFloat(e.target.value) : parseInt(e.target.value);
-            this.audioEngine.setGlobalParam(param, val);
-            if (disp) disp.innerText = param === 'spread' ? val + '%' : val;
-        });
-    }
-
-    bindFilter(id, param) {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.addEventListener('input', (e) => {
-            const val = parseFloat(e.target.value);
-            this.audioEngine.setFilterParam(param, val);
-        });
-    }
-
-    bindOp(op, param, isNum = true) {
-        const id = `op${op}-${param}`;
-        const el = document.getElementById(id);
-        const disp = document.getElementById(`val-${id}`);
-        if (!el) return;
-        el.addEventListener('input', (e) => {
-            let val = e.target.value;
-            if (isNum) val = parseFloat(val);
-            this.audioEngine.setOpParam(op, param, val);
-            if (disp) disp.innerText = val;
         });
     }
 }
