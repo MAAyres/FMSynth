@@ -141,12 +141,95 @@ h1 {
 }
 
 .global-section {
-    flex: 0 0 200px;
+    flex: 0 0 250px;
+    /* Widened for Filter controls */
     display: flex;
     flex-direction: column;
     gap: 15px;
     border-right: 1px solid rgba(255, 255, 255, 0.1);
     padding-right: 20px;
+    overflow-y: auto;
+    /* Scroll if height vertical is tight */
+}
+
+#mobile-toggle {
+    position: absolute;
+    right: 0;
+    background: transparent;
+    border: 1px solid var(--accent-primary);
+    color: var(--accent-primary);
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 1.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s ease;
+}
+
+#mobile-toggle:hover,
+#mobile-toggle.active {
+    background: var(--accent-primary);
+    color: #000;
+    box-shadow: 0 0 15px var(--accent-primary);
+}
+
+/* Virtual Keyboard */
+.virtual-keyboard {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 120px;
+    background: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(10px);
+    display: flex;
+    justify-content: center;
+    padding: 10px;
+    z-index: 50;
+    transform: translateY(0);
+    transition: transform 0.3s ease;
+}
+
+.virtual-keyboard.hidden {
+    transform: translateY(100%);
+    pointer-events: none;
+}
+
+.key {
+    position: relative;
+    width: 40px;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.8);
+    border: 1px solid #000;
+    border-radius: 0 0 5px 5px;
+    margin: 0 2px;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.key.black {
+    width: 30px;
+    height: 60%;
+    background: #000;
+    border: 1px solid #333;
+    z-index: 2;
+    margin-left: -15px;
+    margin-right: -15px;
+}
+
+.key:active,
+.key.active {
+    background: var(--accent-primary);
+    box-shadow: 0 0 15px var(--accent-primary);
+}
+
+.key.black:active,
+.key.black.active {
+    background: var(--accent-secondary);
+    box-shadow: 0 0 15px var(--accent-secondary);
 }
 
 .operator-grid {

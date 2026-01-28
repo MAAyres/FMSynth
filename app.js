@@ -37,11 +37,22 @@ class AudioEngine {
 
         this.spread = 0; // 0 to 100%
 
+        // Main Amp Envelope
         this.envelope = {
-            attack: 0.05,
-            decay: 0.3,
-            sustain: 0.7,
-            release: 1.0
+            attack: 0.05, decay: 0.3, sustain: 0.7, release: 1.0
+        };
+
+        // Filter Params
+        this.filter = {
+            cutoff: 20000,
+            res: 0,
+            drive: 0,
+            envAmt: 0
+        };
+
+        // Filter Envelope
+        this.filterEnv = {
+            attack: 0.05, decay: 0.3, sustain: 0.7, release: 1.0
         };
     }
 
@@ -49,9 +60,21 @@ class AudioEngine {
         if (param === 'volume') {
             this.masterGain.gain.value = value;
         } else if (param === 'spread') {
-            this.spread = value; // 0-100
+            this.spread = value;
         } else if (this.envelope[param] !== undefined) {
             this.envelope[param] = value;
+        }
+    }
+
+    setFilterParam(param, value) {
+        if (this.filter[param] !== undefined) {
+            this.filter[param] = value;
+            // Live update cutoff/res/drive if we want real-time tweaking
+            Object.values(this.voices).forEach(voice => {
+                voice.updateFilter(param, value);
+            });
+        } else if (this.filterEnv[param] !== undefined) {
+            this.filterEnv[param] = value;
         }
     }
 
@@ -69,7 +92,7 @@ class AudioEngine {
         if (this.ctx.state === 'suspended') this.ctx.resume();
         if (this.voices[note]) this.voices[note].stop();
 
-        const voice = new FMVoice(this.ctx, freq, this.ops, this.envelope, this.spread, this.masterGain);
+        const voice = new FMVoice(this.ctx, freq, this.ops, this.envelope, this.filter, this.filterEnv, this.spread, this.masterGain);
         voice.start();
         this.voices[note] = voice;
     }
@@ -82,12 +105,86 @@ class AudioEngine {
     }
 }
 
+class LadderFilter {
+    constructor(ctx, startFreq, res, drive) {
+        this.ctx = ctx;
+        // Topology: Input -> Shaper (Drive) -> Biquad1 -> Biquad2 -> Output
+        // Each biquad is 12dB/oct Lowpass -> Total 24dB
+
+        this.input = ctx.createGain();
+        this.output = ctx.createGain();
+
+        this.shaper = ctx.createWaveShaper();
+        this.shaper.curve = this.makeDistortionCurve(drive);
+
+        this.lpf1 = ctx.createBiquadFilter();
+        this.lpf1.type = 'lowpass';
+        this.lpf1.Q.value = res / 2; // Split res? Usually ladder res is complex.
+
+        this.lpf2 = ctx.createBiquadFilter();
+        this.lpf2.type = 'lowpass';
+        this.lpf2.Q.value = res / 2;
+
+        // Initial Values
+        this.setCutoff(startFreq);
+
+        // Chain
+        this.input.connect(this.shaper);
+        this.shaper.connect(this.lpf1);
+        this.lpf1.connect(this.lpf2);
+        this.lpf2.connect(this.output);
+    }
+
+    setCutoff(freq) {
+        const f = Math.max(20, Math.min(20000, freq));
+        this.lpf1.frequency.setValueAtTime(f, this.ctx.currentTime);
+        this.lpf2.frequency.setValueAtTime(f, this.ctx.currentTime);
+    }
+
+    setRes(val) {
+        // Map 0-20 range to understandable Q
+        // Self oscillation happens at high Q
+        const q = Math.max(0, val);
+        this.lpf1.Q.value = q;
+        this.lpf2.Q.value = q;
+    }
+
+    setDrive(amount) {
+        this.shaper.curve = this.makeDistortionCurve(amount);
+    }
+
+    // Simple sigmoid curve for soft clipper/drive
+    makeDistortionCurve(amount) {
+        const k = typeof amount === 'number' ? amount : 0;
+        const n_samples = 44100;
+        const curve = new Float32Array(n_samples);
+        const deg = Math.PI / 180;
+
+        // If 0, linear
+        if (k === 0) {
+            for (let i = 0; i < n_samples; ++i) {
+                curve[i] = (i * 2) / n_samples - 1;
+            }
+            return curve;
+        }
+
+        // Sigmoid
+        for (let i = 0; i < n_samples; ++i) {
+            let x = (i * 2) / n_samples - 1;
+            curve[i] = (3 + k) * x * 20 * deg / (Math.PI + k * Math.abs(x));
+        }
+        return curve;
+    }
+}
+
 class FMVoice {
-    constructor(ctx, freq, opsParams, env, spread, destination) {
+    constructor(ctx, freq, opsParams, env, filterParams, filterEnv, spread, destination) {
         this.ctx = ctx;
         this.freq = freq;
         this.opsParams = opsParams;
         this.env = env;
+        this.filterParams = filterParams;
+        this.filterEnv = filterEnv;
         this.spread = spread;
         this.destination = destination;
 
@@ -105,18 +202,26 @@ class FMVoice {
         panner.pan.value = panPos;
         panner.connect(this.destination);
 
+        // Filter (Per chain)
+        const filter = new LadderFilter(this.ctx, this.filterParams.cutoff, this.filterParams.res, this.filterParams.drive);
+        filter.output.connect(panner);
+
+        // Env Gain -> Filter -> Panner
+        // Need to apply envelope BEFORE filter to drive it, or AFTER? 
+        // Standard VCA is AFTER VCF.
+        // Signal Flow: OpStack -> VCA (Amp Env) -> Filter -> Panner
+
+        const envGain = this.ctx.createGain();
+        envGain.connect(filter.input);
+        envGain.gain.value = 0;
+
         // Calculate Detune based on Spread and Pan
         // Spread 0-100. Max detune say +/- 50 cents?
         // Left = Flat, Right = Sharp
         const spreadDetune = (this.spread / 100) * 25 * panPos; // +/- 25 cents at max
 
-        // Envelope Gain (Global ADSR applied to Carrier A output)
-        const envGain = this.ctx.createGain();
-        envGain.connect(panner);
-        envGain.gain.value = 0;
-
         // Operators
-        // D -> C -> B -> A -> Env -> Panner
+        // D -> C -> B -> A -> Env -> Filter -> Panner
 
         const opA = new Operator(this.ctx, this.freq + spreadDetune, this.opsParams.A, false); // Carrier
         const opB = new Operator(this.ctx, this.freq + spreadDetune, this.opsParams.B, true);
@@ -133,7 +238,7 @@ class FMVoice {
         opA.connectTo(envGain);
 
         return {
-            panner, envGain, opA, opB, opC, opD
+            panner, filter, envGain, opA, opB, opC, opD
         };
     }
 
@@ -141,17 +246,53 @@ class FMVoice {
         const now = this.ctx.currentTime;
 
         [this.chainL, this.chainR].forEach(chain => {
+            // Apply Amp Envelope
+            chain.envGain.gain.cancelScheduledValues(now);
+            chain.envGain.gain.setValueAtTime(0, now);
+            chain.envGain.gain.linearRampToValueAtTime(1, now + this.env.attack);
+            chain.envGain.gain.setTargetAtTime(this.env.sustain, now + this.env.attack, this.env.decay);
+
+            // Apply Filter Envelope
+            // Base Cutoff + (Env Amt * ADSR)
+            const baseFreq = this.filterParams.cutoff;
+            const amt = this.filterParams.envAmt;
+
+            if (amt > 0) {
+                const tA = now + this.filterEnv.attack;
+
+                // Attack
+                chain.filter.lpf1.frequency.cancelScheduledValues(now);
+                chain.filter.lpf2.frequency.cancelScheduledValues(now);
+
+                chain.filter.lpf1.frequency.setValueAtTime(baseFreq, now);
+                chain.filter.lpf2.frequency.setValueAtTime(baseFreq, now);
+
+                chain.filter.lpf1.frequency.linearRampToValueAtTime(Math.min(20000, baseFreq + amt), tA);
+                chain.filter.lpf2.frequency.linearRampToValueAtTime(Math.min(20000, baseFreq + amt), tA);
+
+                // Decay/Sustain
+                // Sustain Level = baseFreq + (amt * sustain)
+                const susLevel = Math.min(20000, baseFreq + (amt * this.filterEnv.sustain));
+
+                chain.filter.lpf1.frequency.setTargetAtTime(susLevel, tA, this.filterEnv.decay);
+                chain.filter.lpf2.frequency.setTargetAtTime(susLevel, tA, this.filterEnv.decay);
+            } else {
+                chain.filter.setCutoff(baseFreq);
+            }
+
             // Start Ops
             chain.opA.start(now);
             chain.opB.start(now);
             chain.opC.start(now);
             chain.opD.start(now);
+        });
+    }
 
-            // ADSR
-            chain.envGain.gain.cancelScheduledValues(now);
-            chain.envGain.gain.setValueAtTime(0, now);
-            chain.envGain.gain.linearRampToValueAtTime(1, now + this.env.attack);
-            chain.envGain.gain.setTargetAtTime(this.env.sustain, now + this.env.attack, this.env.decay);
+    updateFilter(param, value) {
+        [this.chainL, this.chainR].forEach(chain => {
+            if (param === 'cutoff') chain.filter.setCutoff(value);
+            else if (param === 'res') chain.filter.setRes(value);
+            else if (param === 'drive') chain.filter.setDrive(value);
         });
     }
 
@@ -175,11 +316,24 @@ class FMVoice {
     release() {
         const now = this.ctx.currentTime;
         [this.chainL, this.chainR].forEach(chain => {
+            // Amp Release
             chain.envGain.gain.cancelScheduledValues(now);
             chain.envGain.gain.setValueAtTime(chain.envGain.gain.value, now);
             chain.envGain.gain.exponentialRampToValueAtTime(0.001, now + this.env.release);
 
-            const stopTime = now + this.env.release + 0.1;
+            // Filter Release
+            // Return to Base Freq
+            if (this.filterParams.envAmt > 0) {
+                chain.filter.lpf1.frequency.cancelScheduledValues(now);
+                chain.filter.lpf2.frequency.cancelScheduledValues(now);
+                chain.filter.lpf1.frequency.setValueAtTime(chain.filter.lpf1.frequency.value, now);
+                chain.filter.lpf2.frequency.setValueAtTime(chain.filter.lpf2.frequency.value, now);
+
+                chain.filter.lpf1.frequency.exponentialRampToValueAtTime(Math.max(20, this.filterParams.cutoff), now + this.filterEnv.release);
+                chain.filter.lpf2.frequency.exponentialRampToValueAtTime(Math.max(20, this.filterParams.cutoff), now + this.filterEnv.release);
+            }
+
+            const stopTime = now + Math.max(this.env.release, this.filterEnv.release) + 0.1;
             chain.opA.stop(stopTime);
             chain.opB.stop(stopTime);
             chain.opC.stop(stopTime);
@@ -337,6 +491,7 @@ class InputManager {
             't': 369.99, 'g': 392.00, 'y': 415.30, 'h': 440.00, 'u': 466.16, 'j': 493.88, 'k': 523.25
         };
         this.setupKeyboard();
+        this.setupVirtualKeyboard();
         this.setupControls();
     }
 
@@ -345,6 +500,8 @@ class InputManager {
             if (e.repeat) return;
             const key = e.key.toLowerCase();
             if (this.keyboardMap[key]) {
+                const button = document.querySelector(`[data-key="${key}"]`);
+                if (button) button.classList.add('active');
                 this.audioEngine.startNote(key, this.keyboardMap[key]);
             }
         });
@@ -352,8 +509,68 @@ class InputManager {
         window.addEventListener('keyup', (e) => {
             const key = e.key.toLowerCase();
             if (this.keyboardMap[key]) {
+                const button = document.querySelector(`[data-key="${key}"]`);
+                if (button) button.classList.remove('active');
                 this.audioEngine.stopNote(key);
             }
+        });
+    }
+
+    setupVirtualKeyboard() {
+        const kbContainer = document.getElementById('virtual-keyboard');
+        const toggle = document.getElementById('mobile-toggle');
+
+        // Toggle Visibility
+        toggle.addEventListener('click', () => {
+            kbContainer.classList.toggle('hidden');
+            toggle.classList.toggle('active');
+        });
+
+        // Generate Keys
+        const notes = [
+            { key: 'a', note: 'C4', type: 'white' },
+            { key: 'w', note: 'C#4', type: 'black' },
+            { key: 's', note: 'D4', type: 'white' },
+            { key: 'e', note: 'D#4', type: 'black' },
+            { key: 'd', note: 'E4', type: 'white' },
+            { key: 'f', note: 'F4', type: 'white' },
+            { key: 't', note: 'F#4', type: 'black' },
+            { key: 'g', note: 'G4', type: 'white' },
+            { key: 'y', note: 'G#4', type: 'black' },
+            { key: 'h', note: 'A4', type: 'white' },
+            { key: 'u', note: 'A#4', type: 'black' },
+            { key: 'j', note: 'B4', type: 'white' },
+            { key: 'k', note: 'C5', type: 'white' },
+        ];
+
+        notes.forEach(n => {
+            const btn = document.createElement('div');
+            btn.className = `key ${n.type}`;
+            btn.dataset.key = n.key;
+            // No label for sleekness, or adding it?
+            // btn.innerText = n.key.toUpperCase();
+
+            // Touch Events
+            const start = (e) => {
+                e.preventDefault();
+                btn.classList.add('active');
+                this.audioEngine.startNote(n.key, this.keyboardMap[n.key]);
+            };
+
+            const stop = (e) => {
+                e.preventDefault();
+                btn.classList.remove('active');
+                this.audioEngine.stopNote(n.key);
+            };
+
+            btn.addEventListener('mousedown', start);
+            btn.addEventListener('mouseup', stop);
+            btn.addEventListener('mouseleave', stop);
+
+            btn.addEventListener('touchstart', start);
+            btn.addEventListener('touchend', stop);
+
+            kbContainer.appendChild(btn);
         });
     }
 
@@ -362,6 +579,18 @@ class InputManager {
         this.bind('spread', 'spread', false);
         this.bind('volume', 'volume');
 
+        // Filter
+        this.bindFilter('f-cutoff', 'cutoff');
+        this.bindFilter('f-res', 'res');
+        this.bindFilter('f-drive', 'drive');
+        this.bindFilter('f-env-amt', 'envAmt');
+
+        this.bindFilter('f-attack', 'attack');
+        this.bindFilter('f-decay', 'decay');
+        this.bindFilter('f-sustain', 'sustain');
+        this.bindFilter('f-release', 'release');
+
+        // Amp Env
         this.bind('attack', 'attack');
         this.bind('decay', 'decay');
         this.bind('sustain', 'sustain');
@@ -394,6 +623,15 @@ class InputManager {
             const val = isFloat ? parseFloat(e.target.value) : parseInt(e.target.value);
             this.audioEngine.setGlobalParam(param, val);
             if (disp) disp.innerText = param === 'spread' ? val + '%' : val;
+        });
+    }
+
+    bindFilter(id, param) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            this.audioEngine.setFilterParam(param, val);
         });
     }
 
