@@ -179,6 +179,26 @@ class AudioEngine {
         this.filterEnv = {
             attack: 0.05, decay: 0.3, sustain: 0.7, release: 1.0
         };
+
+        // LFOs (Global)
+        this.lfo1 = new LFO(this.ctx);
+        this.lfo2 = new LFO(this.ctx);
+
+        // Mod Matrix State
+        // { targetId: { lfo1: 0, lfo2: 0, env1: 0, env2: 0 } }
+        this.modulations = {};
+    }
+
+    // Register modulation (called by UI)
+    setModulation(targetId, sourceId, amount) {
+        if (!this.modulations[targetId]) this.modulations[targetId] = { lfo1: 0, lfo2: 0, env1: 0, env2: 0 };
+        this.modulations[targetId][sourceId] = amount;
+
+        // Update active voices if possible (LFOs only for now?)
+        // Actually, we need to update routing dynamically.
+        Object.values(this.voices).forEach(voice => {
+            voice.updateModulation(targetId, sourceId, amount);
+        });
     }
 
     makeDistortionCurve(amount) {
@@ -259,7 +279,8 @@ class AudioEngine {
 
         const voice = new FMVoice(this.ctx, shiftedFreq, this.ops, this.envelope,
             { ...this.filter, cutoff: logCutoff },
-            this.filterEnv, this.spread, this.masterGain);
+            this.filterEnv, this.spread, this.masterGain,
+            this.lfo1, this.lfo2, this.modulations); // Pass LFOs + Matrix
 
         voice.start();
         this.voices[note] = voice;
@@ -311,7 +332,7 @@ class LadderFilter {
 }
 
 class FMVoice {
-    constructor(ctx, freq, opsParams, env, filterParams, filterEnv, spread, destination) {
+    constructor(ctx, freq, opsParams, env, filterParams, filterEnv, spread, destination, lfo1, lfo2, mods) {
         this.ctx = ctx;
         this.freq = freq;
         this.opsParams = opsParams;
@@ -320,6 +341,9 @@ class FMVoice {
         this.filterEnv = filterEnv;
         this.spread = spread;
         this.destination = destination;
+        this.lfo1 = lfo1;
+        this.lfo2 = lfo2;
+        this.mods = mods || {};
 
         this.chainL = this.createChain(-1);
         this.chainR = this.createChain(1);
@@ -349,7 +373,12 @@ class FMVoice {
         opB.connectTo(opA.osc.frequency);
         opA.connectTo(envGain);
 
-        return { panner, filter, envGain, opA, opB, opC, opD };
+        const chain = { panner, filter, envGain, opA, opB, opC, opD };
+
+        // Apply Modulation Wiring
+        this.applyModulations(chain);
+
+        return chain;
     }
 
     start() {
@@ -402,19 +431,73 @@ class FMVoice {
         [this.chainL, this.chainR].forEach(chain => {
             const op = chain[`op${opId}`];
             if (op) op.setParam(param, value);
-
-            // If spread changes re-trigger freq update? 
-            // Better: updateOp handles standard params.
-            // spread needs special handling. 
-            // Let's hack: whenever coarse changes, we re-apply spread logic in Operator.updateFreq?
-            // Actually, we need to pass Spread down to Operator or handle it here.
-
-            // Simplified: The User requested real-time spread.
-            // setGlobalParam('spread') calls updateOp('A'...) which is a hack.
-            // Let's make a proper updateSpread method in Voice.
         });
     }
 
+    // Apply Modulation Routing
+    applyModulations(chain) {
+        // Mapping: Target ID -> AudioParam or Function?
+        // Supported Targets: 'f-cutoff-k', 'opA-level-k', etc.
+        // We need to map UI IDs to Internal Nodes.
+
+        Object.keys(this.mods).forEach(targetId => {
+            const depths = this.mods[targetId];
+            if (!depths) return;
+
+            // Find Target AudioParam in this chain
+            let paramNode = null;
+            let baseVal = 0;
+
+            if (targetId === 'f-cutoff-k') {
+                // Cutoff modulation is tricky vs ADSR. 
+                // We modulate the frequency AudioParam of lpf1 and lpf2.
+                // Actually, let's just create a modGain -> lpf.detune (easier than freq sum)
+                // Or modGain -> lpf.frequency
+                paramNode = chain.filter.lpf1.frequency; // And lpf2?
+                baseVal = chain.filter.lpf1.frequency.value;
+            } else if (targetId.includes('-level-k')) {
+                // opX-level-k
+                const opId = targetId.charAt(2); // 'o','p','A' -> 2 index? opA = 0..2. "opA" 
+                const op = chain[`op${opId}`];
+                if (op) { paramNode = op.gain.gain; baseVal = op.params.level * 2000; }
+            } else if (targetId.includes('-coarse-k')) {
+                const opId = targetId.charAt(2);
+                const op = chain[`op${opId}`];
+                // Modulating freq? use detune.
+                if (op) { paramNode = op.osc.detune; baseVal = 0; }
+            }
+
+            if (paramNode) {
+                // LFO 1
+                if (depths.lfo1 !== 0) {
+                    const g = this.ctx.createGain();
+                    g.gain.value = depths.lfo1 * (targetId === 'f-cutoff-k' ? 20 : 10); // Scale?
+                    if (targetId.includes('coarse')) g.gain.value *= 10; // Pitch needs more
+                    this.lfo1.connect(g);
+                    g.connect(paramNode);
+                }
+                // LFO 2
+                if (depths.lfo2 !== 0) {
+                    const g = this.ctx.createGain();
+                    g.gain.value = depths.lfo2 * (targetId === 'f-cutoff-k' ? 20 : 10);
+                    this.lfo2.connect(g);
+                    g.connect(paramNode);
+                }
+
+                // Envelopes? 
+                // Creating a ConstantSource to represent Envelope signal is expensive per voice.
+                // But we already have the ADSR schedule logic.
+                // Just add the mod amount to the ADSR target values?
+                // Too complex for V1. Focusing on LFOs first as requested layout.
+            }
+        });
+    }
+
+    updateModulation(targetId, sourceId, amount) {
+        // Real-time update? 
+        // Hard to update existing graph without tracking every gain node.
+        // For now, modulation takes effect on NEXT NOTE.
+    }
     updateSpread(newSpread) {
         this.spread = newSpread;
         // Re-apply freq to all ops with new spread
@@ -447,18 +530,30 @@ class FMVoice {
             chain.envGain.gain.setValueAtTime(chain.envGain.gain.value, now);
             chain.envGain.gain.exponentialRampToValueAtTime(0.001, now + this.env.release);
 
-            // Filter Release -> Return to Base
-            if (this.filterParams.envAmt > 10) {
-                const base = this.filterParams.cutoff; // Stored already as log value in params?
-                // Actually this.filterParams.cutoff passed in constructor is the Start Freq
-                // We should reference current logic but simplify:
-                // Just linear ramp down to base freq?
-            }
-
+            // Filter Release
+            // Simple approach: Let the previous automation finish or decay? 
+            // Better: Just stop oscillators after release.
             const stopTime = now + Math.max(this.env.release, this.filterEnv.release) + 0.1;
             chain.opA.stop(stopTime); chain.opB.stop(stopTime); chain.opC.stop(stopTime); chain.opD.stop(stopTime);
         });
     }
+}
+
+class LFO {
+    constructor(ctx) {
+        this.ctx = ctx;
+        this.osc = ctx.createOscillator();
+        this.osc.type = 'sine';
+        this.osc.frequency.value = 1;
+        this.osc.start();
+        // We output to a dummy node or let Voice connect?
+        // Actually, we can just expose the oscillator. 
+        // But we need per-voice Gain nodes to control depth. 
+        // The LFO itself is global and always running.
+    }
+    setRate(val) { this.osc.frequency.value = val; }
+    setWave(val) { this.osc.type = val; }
+    connect(dest) { this.osc.connect(dest); }
 }
 
 class Operator {
@@ -679,35 +774,134 @@ class InputManager {
         });
     }
 
+    setupMatrixUI() {
+        const row = document.getElementById('matrix-row-active');
+        const nameDisplay = document.getElementById('mod-target-name');
+
+        // Handle drag on cells
+        const cells = row.querySelectorAll('.matrix-cell');
+        cells.forEach(cell => {
+            let ry = 0;
+            let startVal = 0;
+            let dragging = false;
+            const source = cell.dataset.source;
+            const valDisplay = cell.querySelector('.matrix-val');
+            const posBar = cell.querySelector('.matrix-bar-pos');
+            const negBar = cell.querySelector('.matrix-bar-neg');
+
+            cell.addEventListener('mousedown', (e) => {
+                if (!this.activeTarget) return;
+                dragging = true;
+                ry = e.clientY;
+                // Get current value from engine
+                const mods = this.audioEngine.modulations[this.activeTarget] || {};
+                startVal = mods[source] || 0;
+                document.body.style.cursor = 'ns-resize';
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (!dragging) return;
+                const dy = ry - e.clientY;
+                let newVal = startVal + dy; // Sensitivity 1:1 pixel
+                newVal = Math.max(-100, Math.min(100, newVal));
+
+                // Update Engine
+                this.audioEngine.setModulation(this.activeTarget, source, newVal);
+
+                // Update UI Local
+                valDisplay.innerText = Math.round(newVal);
+                if (newVal >= 0) {
+                    posBar.style.height = newVal + '%';
+                    negBar.style.height = '0%';
+                } else {
+                    posBar.style.height = '0%';
+                    negBar.style.height = Math.abs(newVal) + '%';
+                }
+            });
+
+            window.addEventListener('mouseup', () => {
+                if (dragging) {
+                    dragging = false;
+                    document.body.style.cursor = 'default';
+                }
+            });
+        });
+    }
+
+    selectTarget(id, label) {
+        this.activeTarget = id;
+        document.getElementById('mod-target-name').innerText = label;
+
+        // Update UI to show current mod depths
+        const mods = this.audioEngine.modulations[id] || { lfo1: 0, lfo2: 0, env1: 0, env2: 0 };
+        const cells = document.querySelectorAll('.matrix-cell');
+        cells.forEach(cell => {
+            const source = cell.dataset.source;
+            const val = mods[source] || 0;
+            const valDisplay = cell.querySelector('.matrix-val');
+            const posBar = cell.querySelector('.matrix-bar-pos');
+            const negBar = cell.querySelector('.matrix-bar-neg');
+
+            valDisplay.innerText = Math.round(val);
+            if (val >= 0) {
+                posBar.style.height = val + '%';
+                negBar.style.height = '0%';
+            } else {
+                posBar.style.height = '0%';
+                negBar.style.height = Math.abs(val) + '%';
+            }
+        });
+    }
+
     setupControls() {
         // Init Knobs
         // Global
-        new RotaryKnob('volume-k', 'Volume', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setGlobalParam('volume', v));
-        new RotaryKnob('spread-k', 'Spread', 0, 1, 0.001, 0, (v) => {
-            // Non-linear mapping: v^2 * 100
+        // LFO Controls
+        new RotaryKnob('lfo1-rate-k', 'Rate', 0.1, 20, 0.1, 1, (v) => this.audioEngine.lfo1.setRate(v));
+        document.getElementById('lfo1-wave').addEventListener('change', (e) => this.audioEngine.lfo1.setWave(e.target.value));
+
+        new RotaryKnob('lfo2-rate-k', 'Rate', 0.1, 20, 0.1, 0.5, (v) => this.audioEngine.lfo2.setRate(v));
+        document.getElementById('lfo2-wave').addEventListener('change', (e) => this.audioEngine.lfo2.setWave(e.target.value));
+
+        // Mod Matrix UI Logic
+        this.activeTarget = null;
+        this.setupMatrixUI();
+
+        // Init Knobs with Selection Logic
+        const createSelectableKnob = (id, label, min, max, step, init, cb, map) => {
+            const k = new RotaryKnob(id, label, min, max, step, init, cb, map);
+            // Hook into click to select
+            const el = document.getElementById(id);
+            el.addEventListener('mousedown', () => this.selectTarget(id, label));
+            el.addEventListener('touchstart', () => this.selectTarget(id, label));
+            return k;
+        };
+
+        // Global
+        createSelectableKnob('volume-k', 'Volume', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setGlobalParam('volume', v));
+        createSelectableKnob('spread-k', 'Spread', 0, 1, 0.001, 0, (v) => {
             const spreadVal = v * v * 100;
             this.audioEngine.setGlobalParam('spread', spreadVal);
-        }, (v) => Math.round(v * v * 100)); // Display map
-        new RotaryKnob('saturation-k', 'Sat', 0, 1, 0.01, 0, (v) => this.audioEngine.setGlobalParam('saturation', v)); // New
+        }, (v) => Math.round(v * v * 100));
+        createSelectableKnob('saturation-k', 'Sat', 0, 1, 0.01, 0, (v) => this.audioEngine.setGlobalParam('saturation', v));
 
-        // Amp Env (ADSR)
-        new RotaryKnob('attack-k', 'A', 0.01, 2, 0.01, 0.05, (v) => this.audioEngine.setGlobalParam('attack', v));
-        new RotaryKnob('decay-k', 'D', 0.1, 2, 0.01, 0.3, (v) => this.audioEngine.setGlobalParam('decay', v));
-        new RotaryKnob('sustain-k', 'S', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setGlobalParam('sustain', v));
-        new RotaryKnob('release-k', 'R', 0.1, 5, 0.01, 1.0, (v) => this.audioEngine.setGlobalParam('release', v));
+        // Amp Env
+        createSelectableKnob('attack-k', 'A', 0.01, 2, 0.01, 0.05, (v) => this.audioEngine.setGlobalParam('attack', v));
+        createSelectableKnob('decay-k', 'D', 0.1, 2, 0.01, 0.3, (v) => this.audioEngine.setGlobalParam('decay', v));
+        createSelectableKnob('sustain-k', 'S', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setGlobalParam('sustain', v));
+        createSelectableKnob('release-k', 'R', 0.1, 5, 0.01, 1.0, (v) => this.audioEngine.setGlobalParam('release', v));
 
-        // Filter Controls
-        // Cutoff: 0-1 linear sent to param input, engine maps to Log
-        new RotaryKnob('f-cutoff-k', 'Cutoff', 0.0, 1.0, 0.001, 0.8, (v) => this.audioEngine.setFilterParam('cutoff', v));
-        new RotaryKnob('f-res-k', 'Res', 0, 20, 0.1, 0, (v) => this.audioEngine.setFilterParam('res', v));
+        // Filter
+        createSelectableKnob('f-cutoff-k', 'Cutoff', 0.0, 1.0, 0.001, 0.8, (v) => this.audioEngine.setFilterParam('cutoff', v));
+        createSelectableKnob('f-res-k', 'Res', 0, 20, 0.1, 0, (v) => this.audioEngine.setFilterParam('res', v));
         // Removed f-drive-k binding
-        new RotaryKnob('f-env-amt-k', 'Env', 0, 10000, 100, 0, (v) => this.audioEngine.setFilterParam('envAmt', v));
+        createSelectableKnob('f-env-amt-k', 'Env', 0, 10000, 100, 0, (v) => this.audioEngine.setFilterParam('envAmt', v));
 
         // Filter Env
-        new RotaryKnob('f-attack-k', 'A', 0.01, 2, 0.01, 0.05, (v) => this.audioEngine.setFilterParam('attack', v));
-        new RotaryKnob('f-decay-k', 'D', 0.1, 2, 0.01, 0.3, (v) => this.audioEngine.setFilterParam('decay', v));
-        new RotaryKnob('f-sustain-k', 'S', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setFilterParam('sustain', v));
-        new RotaryKnob('f-release-k', 'R', 0.1, 5, 0.01, 1.0, (v) => this.audioEngine.setFilterParam('release', v));
+        createSelectableKnob('f-attack-k', 'A', 0.01, 2, 0.01, 0.05, (v) => this.audioEngine.setFilterParam('attack', v));
+        createSelectableKnob('f-decay-k', 'D', 0.1, 2, 0.01, 0.3, (v) => this.audioEngine.setFilterParam('decay', v));
+        createSelectableKnob('f-sustain-k', 'S', 0, 1, 0.01, 0.7, (v) => this.audioEngine.setFilterParam('sustain', v));
+        createSelectableKnob('f-release-k', 'R', 0.1, 5, 0.01, 1.0, (v) => this.audioEngine.setFilterParam('release', v));
 
         // Operators
         ['A', 'B', 'C', 'D'].forEach(op => {
@@ -716,10 +910,10 @@ class InputManager {
             sel.addEventListener('change', (e) => this.audioEngine.setOpParam(op, 'wave', e.target.value));
 
             // Knobs
-            new RotaryKnob(`op${op}-coarse-k`, 'Coarse', 0.5, 24, 0.5, 1, (v) => this.audioEngine.setOpParam(op, 'coarse', v));
-            new RotaryKnob(`op${op}-fine-k`, 'Fine', -1000, 1000, 10, 0, (v) => this.audioEngine.setOpParam(op, 'fine', v));
+            createSelectableKnob(`op${op}-coarse-k`, 'Coarse', 0.5, 24, 0.5, 1, (v) => this.audioEngine.setOpParam(op, 'coarse', v));
+            createSelectableKnob(`op${op}-fine-k`, 'Fine', -1000, 1000, 10, 0, (v) => this.audioEngine.setOpParam(op, 'fine', v));
             if (op !== 'A') { // A has no level control
-                new RotaryKnob(`op${op}-level-k`, 'Level', 0, 1, 0.01, op === 'B' ? 0.5 : 0, (v) => this.audioEngine.setOpParam(op, 'level', v));
+                createSelectableKnob(`op${op}-level-k`, 'Level', 0, 1, 0.01, op === 'B' ? 0.5 : 0, (v) => this.audioEngine.setOpParam(op, 'level', v));
             }
         });
 

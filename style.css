@@ -145,6 +145,141 @@ h1 {
     display: flex;
     gap: 10px;
     overflow: hidden;
+    margin-bottom: 10px;
+}
+
+/* Modulation Panel (New) */
+.modulation-panel {
+    background: #1a1a1a;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    height: 140px;
+    display: flex;
+    padding: 10px;
+    gap: 15px;
+    margin-bottom: 60px;
+    /* Space for keyboard */
+}
+
+.mod-section {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.mod-header {
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 5px;
+    border-bottom: 1px solid var(--panel-border);
+}
+
+/* LFO Controls */
+.lfo-controls {
+    display: flex;
+    gap: 10px;
+}
+
+.lfo-unit {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: var(--panel-bg);
+    padding: 5px;
+    border-radius: 4px;
+    border: 1px solid var(--panel-border);
+}
+
+/* Matrix */
+.matrix-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.matrix-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
+    /* Name | LFO1 | LFO2 | Env1 | Env2 */
+    gap: 2px;
+    background: #000;
+    padding: 2px;
+    border-radius: 4px;
+}
+
+.matrix-header-cell {
+    color: #ff9d00;
+    /* Ableton Orange */
+    font-size: 0.7rem;
+    padding: 5px;
+    text-align: center;
+    font-weight: 500;
+}
+
+.matrix-row {
+    display: contents;
+}
+
+.matrix-target-name {
+    color: var(--text-main);
+    background: #333;
+    padding: 8px;
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    border-radius: 2px;
+}
+
+.matrix-cell {
+    background: #2a2a2a;
+    position: relative;
+    height: 30px;
+    cursor: ns-resize;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    border-radius: 2px;
+}
+
+.matrix-cell:hover {
+    background: #3a3a3a;
+}
+
+.matrix-val {
+    font-size: 0.8rem;
+    font-family: monospace;
+    color: #fff;
+    z-index: 2;
+    pointer-events: none;
+}
+
+.matrix-bar-pos {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--accent-primary);
+    /* Teal for positive */
+    opacity: 0.5;
+    height: 0%;
+    /* Dynamic */
+    pointer-events: none;
+}
+
+.matrix-bar-neg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: var(--accent-secondary);
+    /* Pink for negative */
+    opacity: 0.5;
+    height: 0%;
+    /* Dynamic */
+    pointer-events: none;
 }
 
 /* Module Styles */
@@ -171,10 +306,12 @@ h1 {
 
 /* Columns */
 .col-operators {
-    flex: 2;
+    flex: 1.5;
+    /* Reduced from 2 */
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 5px;
+    gap: 2px;
+    /* Tighter gap */
 }
 
 .col-modifiers {
@@ -233,8 +370,12 @@ h1 {
     display: flex;
     flex-direction: column;
     align-items: center;
+    align-items: center;
     justify-content: center;
     margin-bottom: 5px;
+    min-width: 60px;
+    /* Prevent collapse */
+    min-height: 60px;
 }
 
 .knob-svg {

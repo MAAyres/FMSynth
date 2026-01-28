@@ -133,6 +133,84 @@
             </div>
         </div>
 
+        <!-- Modulation Panel (Ableton Style) -->
+        <div class="modulation-panel">
+            <!-- LFOs -->
+            <div class="mod-section">
+                <div class="mod-header">LFOs</div>
+                <div class="lfo-controls">
+                    <!-- LFO 1 -->
+                    <div class="lfo-unit">
+                        <div class="op-header" style="font-size:0.6rem; color:#ff9d00;">LFO 1</div>
+                        <select id="lfo1-wave" class="wave-select" style="width:50px; font-size:0.6rem;">
+                            <option value="sine">Sin</option>
+                            <option value="square">Sqr</option>
+                            <option value="sawtooth">Saw</option>
+                            <option value="triangle">Tri</option>
+                        </select>
+                        <div id="lfo1-rate-k"></div>
+                    </div>
+                    <!-- LFO 2 -->
+                    <div class="lfo-unit">
+                        <div class="op-header" style="font-size:0.6rem; color:#ff9d00;">LFO 2</div>
+                        <select id="lfo2-wave" class="wave-select" style="width:50px; font-size:0.6rem;">
+                            <option value="sine">Sin</option>
+                            <option value="square">Sqr</option>
+                            <option value="sawtooth">Saw</option>
+                            <option value="triangle">Tri</option>
+                        </select>
+                        <div id="lfo2-rate-k"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Matrix -->
+            <div class="matrix-container">
+                <div class="mod-header">MODULATION MATRIX</div>
+                <div class="matrix-grid">
+                    <!-- Headers -->
+                    <div class="matrix-header-cell" style="text-align:left; padding-left:10px;">Target</div>
+                    <div class="matrix-header-cell">LFO 1</div>
+                    <div class="matrix-header-cell">LFO 2</div>
+                    <div class="matrix-header-cell" style="color:#00d2ff;">Filter Env</div>
+                    <div class="matrix-header-cell" style="color:#00d2ff;">Amp Env</div>
+
+                    <!-- Dynamic Row -->
+                    <div class="matrix-row" id="matrix-row-active">
+                        <div class="matrix-target-name" id="mod-target-name">Select Knob...</div>
+
+                        <!-- LFO 1 -->
+                        <div class="matrix-cell" data-source="lfo1">
+                            <span class="matrix-val">0</span>
+                            <div class="matrix-bar-pos" style="height:0%"></div>
+                            <div class="matrix-bar-neg" style="height:0%"></div>
+                        </div>
+
+                        <!-- LFO 2 -->
+                        <div class="matrix-cell" data-source="lfo2">
+                            <span class="matrix-val">0</span>
+                            <div class="matrix-bar-pos" style="height:0%"></div>
+                            <div class="matrix-bar-neg" style="height:0%"></div>
+                        </div>
+
+                        <!-- Env 1 -->
+                        <div class="matrix-cell" data-source="env1">
+                            <span class="matrix-val">0</span>
+                            <div class="matrix-bar-pos" style="height:0%"></div>
+                            <div class="matrix-bar-neg" style="height:0%"></div>
+                        </div>
+
+                        <!-- Env 2 -->
+                        <div class="matrix-cell" data-source="env2">
+                            <span class="matrix-val">0</span>
+                            <div class="matrix-bar-pos" style="height:0%"></div>
+                            <div class="matrix-bar-neg" style="height:0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Virtual Keyboard -->
         <div id="virtual-keyboard" class="virtual-keyboard">
             <div class="octave-controls">
